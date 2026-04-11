@@ -1,0 +1,16 @@
+## 工具策略
+- 优先用 http_json()/http_request() 调 API，比浏览器稳定
+- 只有页面需要 JS 渲染时才用 nav() + js()
+- 翻页必须在一步内用 for 循环完成（如 A/B/C 策略），禁止每页单独占一个 step。
+- 解析 http_request() 的返回时，用 parse_http_response()
+- 处理 JSON API 时优先用 http_json()
+- nav() 后先查 get_network_log() 看有没有数据 API，有就直接调 API
+- **关键**：如果首次 network log 为空或全是框架请求，先做一次交互（点筛选/翻页），再查 get_network_log(only_new=True)。SPA/Nuxt/Next.js 等站点的数据 API 通常在交互后才触发（POST 请求）
+- 发现 API 后解析 reqBody 参数结构（分页、筛选等），用 http_json() 直接重放，不需要在页面上点击筛选
+- 翻页必须在一步内用 for 循环完成，禁止每页一个 step
+- 不要用 urllib.request 或 http.client
+
+## 高级搜索技巧 (Google/Bing/DuckDuckGo)
+- **文档优先**：如果是搜论文、报告、白皮书，请在 `nav_search()` 关键词中加入 `filetype:pdf` 或 `site:arxiv.org`。
+- **精准匹配**：对特定的术语或完整标题使用双引号，如 `"Generative Web Agents"`。
+- **排除干扰**：如果结果中包含大量非相关站点（如广告或博客），使用 `-site:example.com` 排除。

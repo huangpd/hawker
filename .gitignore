@@ -1,0 +1,39 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# --- Environments ---
+.env
+.venv/
+env/
+venv/
+ENV/
+log/
+main.py
+main_v4.10.py
+# --- IDEs ---
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# --- Project Specific ---
+# 爬虫运行产物目录 (包含日志、结果JSON、Notebook)
+crawler_agent/
+document/hawker_agent_architecture.md
+document/CLAUDE.md
+document/GEMINI.md
+# 根目录下的临时 JSON 结果
+
+# --- Build/Package ---
+dist/
+build/
+*.egg-info/
+egg-info/
+node_modules/

@@ -76,11 +76,7 @@ TASK="""
 - employees: "员工数量（如有）"
 - summary: "公司简介（2-3句话）"
 """
-TASK="""
-1. 打开 https://www.ahnews.com.cn/df/hss/pc/lay/node_525.html
-2. 点击"下一页"，获取5页数据
-3. 获取列表页URL和title
-"""
+
 
 TASK="""
 1. 打开google 学术
@@ -93,7 +89,11 @@ TASK="""
 步骤2: 找到下一页按钮，获取前10页数据 ，分类点击 "搜索工具",认证状态点击“不限”，编程语言是“python”，类型 “MCP Server”，点击按“按下载量”排序
 步骤3:提取所有项目名称、简介、url
 """
-
+TASK="""
+1. 打开 https://www.ahnews.com.cn/df/hss/pc/lay/node_525.html
+2. 点击"下一页"，获取5页数据
+3. 获取列表页URL和title
+"""
 
 # =================================================================
 

@@ -131,6 +131,27 @@ class ClearableList(list):
     def __repr__(self): return repr(self._data)
 
 
+def register_core_actions(
+    registry: ToolRegistry,
+    state: CodeAgentState,
+    run_dir: str,
+) -> None:
+    """将核心辅助动作注册到工具注册表，使其在 System Prompt 中自动生成。"""
+    # 提示：核心动作必须带文档字符串，以便 build_capabilities_list 提取
+    
+    fn_append = _make_append_items(state)
+    fn_append.__doc__ = "保存数据。追加到 all_items（自动去重），这是保存数据的唯一方式。"
+    registry.register(fn_append, name="append_items")
+    
+    fn_checkpoint = _make_save_checkpoint(state, run_dir)
+    fn_checkpoint.__doc__ = "将当前 all_items 进度保存到磁盘（防止任务意外中断丢失数据）。"
+    registry.register(fn_checkpoint, name="save_checkpoint")
+    
+    fn_final = _make_final_answer(state)
+    fn_final.__doc__ = "提交最终答案并强制结束任务。必须在确认完成时单独调用一次。"
+    registry.register(fn_final, name="final_answer")
+
+
 def build_namespace(
     state: CodeAgentState,
     tools_dict: dict[str, Callable],
@@ -139,7 +160,7 @@ def build_namespace(
     """构建只读的系统工具字典"""
     sys_dict: dict = {}
 
-    # 注入外部工具（浏览器工具、HTTP 工具等）
+    # 注入外部工具（包括通过 register_core_actions 注入的核心动作）
     for name, fn in tools_dict.items():
         if name in ("browser_download", "download_file"):
             # 为这些涉及文件写入的工具自动注入 run_dir 参数
@@ -161,11 +182,6 @@ def build_namespace(
         else:
             sys_dict[name] = _bind_callable_to_state(state, fn)
 
-    # 注入核心动作
-    sys_dict["append_items"] = _bind_callable_to_state(state, _make_append_items(state))
-    sys_dict["save_checkpoint"] = _bind_callable_to_state(state, _make_save_checkpoint(state, run_dir))
-    sys_dict["final_answer"] = _bind_callable_to_state(state, _make_final_answer(state))
-
     # 注入数据辅助函数
     sys_dict["clean_items"] = clean_items
     sys_dict["ensure"] = ensure
@@ -173,8 +189,7 @@ def build_namespace(
     sys_dict["summarize_json"] = summarize_json
     sys_dict["normalize_items"] = normalize_items
     
-    # 共享数据引用 (使用 ClearableList 包装，拦截 .clear() 以同步重置去重集合)
-    # 提醒：Agent 绝对不能通过 all_items = [] 来覆盖它
+    # 共享数据引用 (使用 ClearableList 包装)
     sys_dict["all_items"] = ClearableList(state.items.get_raw_list(), state.items)
 
     # 标准库

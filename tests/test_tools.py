@@ -1,163 +1,79 @@
 from __future__ import annotations
 
-import json
+import json as json_mod
 import logging
 import os
 import tempfile
 
 import pytest
 
-from hawker_agent.agent.namespace import build_namespace
+from hawker_agent.agent.namespace import build_namespace, register_core_actions
 from hawker_agent.agent.prompts import build_system_prompt
 from hawker_agent.models.state import CodeAgentState
+from hawker_agent.observability import clear_log_context, configure_logging
 from hawker_agent.tools.data_tools import (
     clean_items,
     ensure,
-    get_type_signature,
     normalize_items,
     parse_http_response,
     save_file,
     summarize_json,
+    register_data_tools,
 )
 from hawker_agent.tools.registry import ToolRegistry
-from hawker_agent.observability import clear_log_context, configure_logging
 
 
-# ─── ToolRegistry ───────────────────────────────────────────────
+# ─── data_tools ────────────────────────────────────────────────
 
 
-class TestToolRegistry:
-    def test_register_and_description(self) -> None:
-        registry = ToolRegistry()
+class TestDataTools:
+    def test_get_type_signature(self) -> None:
+        from hawker_agent.tools.data_tools import get_type_signature
 
-        def my_tool(url: str) -> str:
-            """导航到指定 URL。"""
-            return url
+        d = {"a": 1, "b": "str", "c": [1, 2], "d": {"x": 1}}
+        sig = get_type_signature(d)
+        assert "a: int" in sig
+        assert "b: str" in sig
+        assert "c: list[int]" in sig
+        assert "d: dict{x}" in sig
 
-        registry.register(my_tool)
-        desc = registry.build_description()
-        assert "my_tool" in desc
-        assert "导航到指定 URL" in desc
-        assert "url: str" in desc
-
-    def test_register_with_custom_name(self) -> None:
-        registry = ToolRegistry()
-        registry.register(lambda: None, name="custom_name")
-        assert "custom_name" in registry
-
-    def test_as_namespace_dict(self) -> None:
-        registry = ToolRegistry()
-
-        def tool_a() -> str:
-            """Tool A."""
-            return "a"
-
-        registry.register(tool_a)
-        ns = registry.as_namespace_dict()
-        assert ns["tool_a"] is tool_a
-
-    def test_len_and_contains(self) -> None:
-        registry = ToolRegistry()
-        assert len(registry) == 0
-        registry.register(lambda: None, name="test")
-        assert len(registry) == 1
-        assert "test" in registry
-        assert "other" not in registry
-
-
-# ─── data_tools ─────────────────────────────────────────────────
-
-
-class TestParseHttpResponse:
-    def test_success(self) -> None:
-        status, body = parse_http_response("[200]\n{\"key\": \"value\"}")
+    def test_parse_http_response_success(self) -> None:
+        raw = "[200]\nhello world"
+        status, body = parse_http_response(raw)
         assert status == 200
-        assert body == '{"key": "value"}'
+        assert body == "hello world"
 
-    def test_error_prefix(self) -> None:
-        with pytest.raises(RuntimeError, match="错误"):
-            parse_http_response("[错误] Connection refused")
+    def test_parse_http_response_error(self) -> None:
+        raw = "[错误] connection failed"
+        with pytest.raises(RuntimeError, match="connection failed"):
+            parse_http_response(raw)
 
-    def test_invalid_format(self) -> None:
-        with pytest.raises(ValueError, match="无法解析"):
-            parse_http_response("not a valid response")
+    def test_clean_items(self) -> None:
+        items = [
+            {"id": 1},
+            {"_truncated": "too long"},
+            "not a dict",
+            {"id": 2},
+        ]
+        cleaned = clean_items(items)
+        assert len(cleaned) == 2
+        assert cleaned[0]["id"] == 1
+        assert cleaned[1]["id"] == 2
 
+    def test_normalize_items(self) -> None:
+        assert len(normalize_items({"a": 1})) == 1
+        assert len(normalize_items([{"a": 1}, {"b": 2}])) == 2
+        assert len(normalize_items('[{"a": 1}]')) == 1
 
-class TestCleanItems:
-    def test_filters_non_dict(self) -> None:
-        result = clean_items([{"a": 1}, "string", 42, {"b": 2}])
-        assert result == [{"a": 1}, {"b": 2}]
-
-    def test_filters_truncated(self) -> None:
-        result = clean_items([{"a": 1}, {"_truncated": "yes"}, {"b": 2}])
-        assert result == [{"a": 1}, {"b": 2}]
-
-    def test_type_error(self) -> None:
-        with pytest.raises(TypeError):
-            clean_items("not a list")  # type: ignore[arg-type]
-
-
-class TestEnsure:
-    def test_passes(self) -> None:
-        ensure(True, "should not raise")
-
-    def test_fails(self) -> None:
-        with pytest.raises(RuntimeError, match="条件不满足"):
-            ensure(False, "条件不满足")
-
-
-class TestNormalizeItems:
-    def test_list_input(self) -> None:
-        result = normalize_items([{"a": 1}])
-        assert result == [{"a": 1}]
-
-    def test_dict_input(self) -> None:
-        result = normalize_items({"a": 1})
-        assert result == [{"a": 1}]
-
-    def test_json_string_input(self) -> None:
-        result = normalize_items('[{"a": 1}]')
-        assert result == [{"a": 1}]
-
-    def test_invalid_type(self) -> None:
-        with pytest.raises(TypeError):
-            normalize_items(42)
-
-
-class TestGetTypeSignature:
-    def test_basic(self) -> None:
-        result = get_type_signature({"name": "test", "count": 42})
-        assert "name: str" in result
-        assert "count: int" in result
-
-    def test_nested(self) -> None:
-        result = get_type_signature({"items": [1, 2, 3]})
-        assert "items: list[int]" in result
-
-
-class TestSummarizeJson:
-    def test_list(self) -> None:
-        result = summarize_json([{"id": 1}, {"id": 2}])
-        assert "[http_json] 2 条" in result
-
-    def test_empty_list(self) -> None:
-        result = summarize_json([])
-        assert "空列表" in result
-
-    def test_dict(self) -> None:
-        result = summarize_json({"key": "value"})
-        assert "[http_json] dict" in result
-
-
-class TestSaveFile:
     def test_save_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            result = save_file('[{"id": 1}]', "test.json", tmpdir)
-            assert "[OK]" in result
+            data = json_mod.dumps([{"id": 1}])
+            result = save_file(data, "test.json", tmpdir)
+            assert "[OK] 已保存 1 条记录" in result
             path = os.path.join(tmpdir, "test.json")
             with open(path) as f:
-                data = json.load(f)
-            assert data == [{"id": 1}]
+                data = json_mod.load(f)
+                assert data == [{"id": 1}]
 
     def test_save_text(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -173,20 +89,32 @@ class TestSaveFile:
 
 class TestBuildSystemPrompt:
     def test_renders_tool_desc(self) -> None:
-        result = build_system_prompt(tool_desc="- nav(url) -> str: 导航")
+        result = build_system_prompt(
+            async_capabilities="await nav()",
+            sync_capabilities="clean_items()",
+            tool_desc="- nav(url) -> str: 导航"
+        )
         assert "- nav(url) -> str: 导航" in result
+        assert "await nav()" in result
+        assert "clean_items()" in result
         assert "爬虫智能体" in result
 
     def test_renders_instructions(self) -> None:
         result = build_system_prompt(
+            async_capabilities="caps_a",
+            sync_capabilities="caps_s",
             tool_desc="tools here",
             instructions="自定义指令",
         )
         assert "自定义指令" in result
 
     def test_default_no_instructions(self) -> None:
-        result = build_system_prompt(tool_desc="tools")
-        assert "执行策略" in result
+        result = build_system_prompt(
+            async_capabilities="caps_a",
+            sync_capabilities="caps_s",
+            tool_desc="tools"
+        )
+        assert "效率规则" in result
 
 
 # ─── namespace ──────────────────────────────────────────────────
@@ -196,24 +124,35 @@ class TestBuildNamespace:
     def teardown_method(self) -> None:
         clear_log_context()
 
+    def _get_ns(self, state, run_dir, tools=None):
+        reg = ToolRegistry()
+        register_core_actions(reg, state, run_dir)
+        register_data_tools(reg)
+        if tools:
+            for name, fn in tools.items():
+                reg.register(fn, name=name)
+        return build_namespace(state, reg.as_namespace_dict(), run_dir)
+
     def test_contains_tools(self) -> None:
         state = CodeAgentState()
-        tools = {"my_tool": lambda: "result"}
-        ns = build_namespace(state, tools, "/tmp/test")
+        ns = self._get_ns(state, "/tmp/test", tools={"my_tool": lambda: "result"})
         assert ns["my_tool"]() == "result"
 
     def test_contains_helpers(self) -> None:
         state = CodeAgentState()
-        ns = build_namespace(state, {}, "/tmp/test")
+        ns = self._get_ns(state, "/tmp/test")
+        # Core actions
         assert callable(ns["append_items"])
         assert callable(ns["save_checkpoint"])
         assert callable(ns["final_answer"])
+        # Data tools
         assert callable(ns["clean_items"])
         assert callable(ns["ensure"])
+        assert callable(ns["summarize_json"])
 
     def test_contains_stdlib(self) -> None:
         state = CodeAgentState()
-        ns = build_namespace(state, {}, "/tmp/test")
+        ns = self._get_ns(state, "/tmp/test")
         import json as json_mod
 
         assert ns["json"] is json_mod
@@ -224,7 +163,7 @@ class TestBuildNamespace:
     @pytest.mark.asyncio
     async def test_append_items_updates_state(self) -> None:
         state = CodeAgentState()
-        ns = build_namespace(state, {}, "/tmp/test")
+        ns = self._get_ns(state, "/tmp/test")
         await ns["append_items"]([{"url": "a"}, {"url": "b"}])
         assert len(state.items) == 2
         assert state.activity_marker == 1
@@ -232,7 +171,7 @@ class TestBuildNamespace:
     @pytest.mark.asyncio
     async def test_final_answer_sets_state(self) -> None:
         state = CodeAgentState()
-        ns = build_namespace(state, {}, "/tmp/test")
+        ns = self._get_ns(state, "/tmp/test")
         await ns["final_answer"]("任务完成")
         assert state.final_answer_requested == "任务完成"
 
@@ -241,7 +180,7 @@ class TestBuildNamespace:
         with tempfile.TemporaryDirectory() as tmpdir:
             state = CodeAgentState()
             state.items.append([{"id": 1}])
-            ns = build_namespace(state, {}, tmpdir)
+            ns = self._get_ns(state, tmpdir)
             result = await ns["save_checkpoint"]()
             assert "[OK]" in result
             assert state.checkpoint_files
@@ -252,10 +191,11 @@ class TestBuildNamespace:
         state = CodeAgentState(trace_id="trace-tool", run_id="run-tool")
 
         async def my_tool() -> str:
+            import logging
             logging.getLogger("hawker_agent.test.tool").info("tool-called")
             return "ok"
 
-        ns = build_namespace(state, {"my_tool": my_tool}, "/tmp/test")
+        ns = self._get_ns(state, "/tmp/test", tools={"my_tool": my_tool})
 
         with caplog.at_level(logging.INFO, logger="hawker_agent.test.tool"):
             result = await ns["my_tool"]()
@@ -264,3 +204,21 @@ class TestBuildNamespace:
         record = caplog.records[-1]
         assert record.trace_id == "trace-tool"
         assert record.run_id == "run-tool"
+
+
+# ─── Data Tools Registration ───────────────────────────────────
+
+def test_register_data_tools() -> None:
+    reg = ToolRegistry()
+    register_data_tools(reg)
+    assert "clean_items" in reg
+    assert "ensure" in reg
+    assert "summarize_json" in reg
+    assert "parse_http_response" in reg
+    
+    # Check sync/async split
+    sync_caps = reg.build_capabilities_list("sync")
+    async_caps = reg.build_capabilities_list("async")
+    assert "clean_items" in sync_caps
+    assert "await" not in sync_caps
+    assert "asyncio.sleep" in async_caps

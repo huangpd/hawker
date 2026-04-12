@@ -172,13 +172,20 @@ async def run(
     llm = LLMClient(cfg)
     reg = registry or ToolRegistry()
     
-    # 加载默认指令
-    instructions_path = Path(__file__).parent.parent / "templates" / "default_instructions.txt"
-    instructions = instructions_path.read_text(encoding="utf-8") if instructions_path.exists() else ""
+    # 加载指令 (默认指令 + 用户自定义)
+    tpl_dir = Path(__file__).parent.parent / "templates"
+    default_path = tpl_dir / "default_instructions.txt"
+    custom_path = tpl_dir / "custom_instructions.txt"
+    
+    instructions = default_path.read_text(encoding="utf-8") if default_path.exists() else ""
+    if custom_path.exists():
+        custom_content = custom_path.read_text(encoding="utf-8").strip()
+        if custom_content:
+            instructions += "\n\n" + custom_content
 
     history = CodeAgentHistoryList.from_task(
         task,
-        system_prompt=build_system_prompt(reg.build_description(), instructions=instructions),
+        system_prompt="", # 稍后在工具注册完后再填充
         compression_threshold=cfg.message_compression_tokens,
     )
     # 为 history 注入 token 计数函数
@@ -192,12 +199,24 @@ async def run(
         if hasattr(br, "target_dir"):
             br.target_dir = run_dir
             
-        # 注册标准工具集
+        # 1. 注册标准工具集
         from hawker_agent.tools.browser_tools import register_browser_tools
         from hawker_agent.tools.http_tools import register_http_tools
+        from hawker_agent.tools.data_tools import register_data_tools
+        from hawker_agent.agent.namespace import register_core_actions
         
+        register_core_actions(reg, state, str(run_dir))
         register_browser_tools(reg, br, history)
         register_http_tools(reg)
+        register_data_tools(reg)
+
+        # 2. 生成并注入最终提示词 (此时分类生成才准确)
+        history.system_prompt = build_system_prompt(
+            async_capabilities=reg.build_capabilities_list("async"),
+            sync_capabilities=reg.build_capabilities_list("sync"),
+            tool_desc=reg.build_description(), 
+            instructions=instructions
+        )
 
         # 构建代码执行命名空间
         system_dict = build_namespace(state, reg.as_namespace_dict(), str(run_dir))

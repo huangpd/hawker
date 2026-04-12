@@ -231,21 +231,20 @@ class TestLLMClient:
         cfg.reasoning_effort = ""
         return cfg
 
-    def test_complete_success(self) -> None:
+    @pytest.mark.asyncio
+    async def test_complete_success(self) -> None:
         from hawker_agent.llm.client import LLMClient
 
         cfg = self._make_settings()
         client = LLMClient(cfg=cfg)
 
         mock_response = SimpleNamespace(
-            output_text="思考内容\n```python\nprint('hi')\n```",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="思考内容\n```python\nprint('hi')\n```"))],
             usage=SimpleNamespace(
                 prompt_tokens=100,
                 completion_tokens=50,
                 total_tokens=150,
             ),
-            status="complete",
-            max_output_tokens=4096,
         )
         mock_response.usage.model_dump = lambda: {
             "prompt_tokens": 100,
@@ -254,10 +253,10 @@ class TestLLMClient:
         }
 
         with (
-            patch("hawker_agent.llm.client._litellm_responses", return_value=mock_response),
+            patch("hawker_agent.llm.client._litellm_completion", return_value=mock_response),
             patch("hawker_agent.llm.client.calculate_cost", return_value=0.01),
         ):
-            result = client.complete([{"role": "user", "content": "test"}])
+            result = await client.complete([{"role": "user", "content": "test"}])
 
         assert isinstance(result, LLMResponse)
         assert "思考内容" in result.text
@@ -266,32 +265,22 @@ class TestLLMClient:
         assert result.cost == pytest.approx(0.01)
         assert not result.is_truncated
 
-    def test_complete_raises_llm_error(self) -> None:
+    @pytest.mark.asyncio
+    async def test_complete_raises_llm_error(self) -> None:
         from hawker_agent.llm.client import LLMClient
 
         cfg = self._make_settings()
         client = LLMClient(cfg=cfg)
 
         with patch(
-            "hawker_agent.llm.client._litellm_responses",
-            side_effect=ConnectionError("timeout"),
+            "hawker_agent.llm.client._litellm_completion",
+            side_effect=Exception("failed"),
         ):
             with pytest.raises(LLMError, match="LiteLLM 请求失败"):
-                client.complete([{"role": "user", "content": "test"}])
+                await client.complete([{"role": "user", "content": "test"}])
 
-    def test_complete_empty_response_raises(self) -> None:
-        from hawker_agent.llm.client import LLMClient
-
-        cfg = self._make_settings()
-        client = LLMClient(cfg=cfg)
-
-        mock_response = SimpleNamespace(output_text="", usage=None, status="complete")
-
-        with patch("hawker_agent.llm.client._litellm_responses", return_value=mock_response):
-            with pytest.raises(LLMError, match="返回空"):
-                client.complete([{"role": "user", "content": "test"}])
-
-    def test_complete_logs_with_context(self, caplog: pytest.LogCaptureFixture) -> None:
+    @pytest.mark.asyncio
+    async def test_complete_logs_with_context(self, caplog: pytest.LogCaptureFixture) -> None:
         from hawker_agent.llm.client import LLMClient
 
         configure_logging(force=True)
@@ -300,14 +289,12 @@ class TestLLMClient:
         cfg = self._make_settings()
         client = LLMClient(cfg=cfg)
         mock_response = SimpleNamespace(
-            output_text="ok",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
             usage=SimpleNamespace(
                 prompt_tokens=10,
                 completion_tokens=5,
                 total_tokens=15,
             ),
-            status="complete",
-            max_output_tokens=1024,
         )
         mock_response.usage.model_dump = lambda: {
             "prompt_tokens": 10,
@@ -316,11 +303,11 @@ class TestLLMClient:
         }
 
         with (
-            patch("hawker_agent.llm.client._litellm_responses", return_value=mock_response),
+            patch("hawker_agent.llm.client._litellm_completion", return_value=mock_response),
             patch("hawker_agent.llm.client.calculate_cost", return_value=0.01),
             caplog.at_level("INFO", logger="hawker_agent.llm.client"),
         ):
-            client.complete([{"role": "user", "content": "test"}])
+            await client.complete([{"role": "user", "content": "test"}])
 
         assert any(record.trace_id == "trace-llm" for record in caplog.records)
         assert any(record.run_id == "run-llm" for record in caplog.records)

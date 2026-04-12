@@ -86,3 +86,11 @@ class CodeAgentHistoryList:
 
     def __len__(self) -> int:
         return len(self._messages)
+
+    @property
+    def system_prompt(self) -> str:
+        return self._system_prompt
+
+    @system_prompt.setter
+    def system_prompt(self, value: str) -> None:
+        self._system_prompt = value

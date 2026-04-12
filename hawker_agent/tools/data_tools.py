@@ -107,10 +107,6 @@ def save_file(data: str, filename: str, run_dir: str) -> str:
 
 
 def register_data_tools(registry: ToolRegistry) -> None:
-    """将数据处理辅助工具注册到工具注册表。"""
-    registry.register(clean_items)
+    """将数据处理辅助工具注册到工具注册表。只注册大模型需要手动调用的工具。"""
     registry.register(ensure)
-    registry.register(normalize_items)
-    registry.register(save_file)
-    registry.register(summarize_json)
     registry.register(parse_http_response)

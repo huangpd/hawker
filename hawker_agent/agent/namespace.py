@@ -183,11 +183,13 @@ def build_namespace(
             sys_dict[name] = _bind_callable_to_state(state, fn)
 
     # 注入数据辅助函数
+    # 注意：这里注入是为了让代码能跑通，但由于它们没在 ToolRegistry 注册，所以不会出现在 Prompt 里
     sys_dict["clean_items"] = clean_items
     sys_dict["ensure"] = ensure
     sys_dict["parse_http_response"] = parse_http_response
     sys_dict["summarize_json"] = summarize_json
     sys_dict["normalize_items"] = normalize_items
+    sys_dict["save_file"] = save_file
     
     # 共享数据引用 (使用 ClearableList 包装)
     sys_dict["all_items"] = ClearableList(state.items.get_raw_list(), state.items)

@@ -18,6 +18,35 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Modules that LLM-generated code must never import
+_BLOCKED_IMPORTS = frozenset({
+    "os", "subprocess", "shutil", "sys", "socket", "ctypes",
+    "signal", "multiprocessing", "threading", "_thread",
+    "importlib", "runpy", "code", "codeop", "compileall",
+    "webbrowser", "antigravity",
+    "pickle", "shelve", "marshal",
+})
+
+
+def _check_imports(code: str) -> str | None:
+    """Return an error message if *code* tries to import a blocked module, else None."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None  # let compile() report the real error later
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                top = alias.name.split(".")[0]
+                if top in _BLOCKED_IMPORTS:
+                    return f"[\u5b89\u5168\u9650\u5236] \u7981\u6b62\u5bfc\u5165\u6a21\u5757: {alias.name}"
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                top = node.module.split(".")[0]
+                if top in _BLOCKED_IMPORTS:
+                    return f"[\u5b89\u5168\u9650\u5236] \u7981\u6b62\u5bfc\u5165\u6a21\u5757: {node.module}"
+    return None
+
 
 def _clean_traceback(tb_str: str) -> str:
     """清理 Traceback，移除执行器内部的干扰行。"""
@@ -58,6 +87,12 @@ async def execute(
         except Exception as e:
             logger.debug("Namespace 快照失败 (可能包含不可 pickle 的对象): %s", e)
             session_snapshot = namespace.session.copy() # 降级为浅拷贝
+
+        # 0. Static import guard
+        import_err = _check_imports(code)
+        if import_err:
+            namespace.rollback()
+            return import_err
 
         try:
             # 1. 编译：允许顶层 await (Python 3.8+)

@@ -211,12 +211,16 @@ async def run(
         register_data_tools(reg)
 
         # 2. 生成并注入最终提示词 (此时分类生成才准确)
-        history.system_prompt = build_system_prompt(
+        full_system_prompt = build_system_prompt(
             async_capabilities=reg.build_capabilities_list("async"),
             sync_capabilities=reg.build_capabilities_list("sync"),
-            tool_desc=reg.build_description(), 
             instructions=instructions
         )
+        print("\n" + "="*40 + " [DEBUG] SYSTEM PROMPT " + "="*40)
+        print(full_system_prompt)
+        print("="*100 + "\n")
+        
+        history.system_prompt = full_system_prompt
 
         # 构建代码执行命名空间
         system_dict = build_namespace(state, reg.as_namespace_dict(), str(run_dir))
@@ -226,7 +230,7 @@ async def run(
             with state.bind_log_context(step):
                 # 1. 准备并调用 LLM
                 prompt_messages = history.to_prompt_messages()
-                llm_response = llm.complete(prompt_messages)
+                llm_response = await llm.complete(prompt_messages)
 
                 # 2. 处理截断异常
                 if llm_response.is_truncated:

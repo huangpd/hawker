@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
 from dataclasses import dataclass
 
 import litellm
-from litellm import completion as _litellm_completion
+from litellm import acompletion as _litellm_completion
 
 from hawker_agent.config import Settings, get_settings
 from hawker_agent.exceptions import LLMError
@@ -107,9 +108,9 @@ class LLMClient:
     def __init__(self, cfg: Settings | None = None) -> None:
         self._cfg = cfg or get_settings()
 
-    def complete(self, messages: list[dict[str, str]]) -> LLMResponse:
+    async def complete(self, messages: list[dict[str, str]]) -> LLMResponse:
         """
-        调用 LLM，返回 LLMResponse。
+        异步调用 LLM，返回 LLMResponse。
         包含针对 429 的自动重试。
         """
         model = _normalize_model_name(self._cfg.model_name)
@@ -137,14 +138,14 @@ class LLMClient:
             try:
                 # 记录核心动作到 DEBUG
                 logger.debug("LLM 请求开始: model=%s attempt=%d", model, attempt + 1)
-                response = _litellm_completion(**kwargs)
+                response = await _litellm_completion(**kwargs)
                 break
             except Exception as exc:
                 exc_str = str(exc)
                 if "429" in exc_str or "RESOURCE_EXHAUSTED" in exc_str:
                     if attempt < max_retries - 1:
                         logger.warning("遇到限额，%ds 后重试...", retry_delay)
-                        time.sleep(retry_delay)
+                        await asyncio.sleep(retry_delay)
                         continue
                 logger.exception("LLM 请求失败")
                 raise LLMError(f"LiteLLM 请求失败: {exc}") from exc

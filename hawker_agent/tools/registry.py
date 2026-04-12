@@ -50,22 +50,46 @@ class ToolRegistry:
             lines.append(f"- {prefix}{spec.name}{spec.signature} -> {spec.return_type}: {spec.description}")
         return "\n".join(lines)
 
+    def _get_clean_signature(self, fn: Callable) -> str:
+        """提取不含类型注解和内部参数的干净签名。"""
+        sig = inspect.signature(inspect.unwrap(fn))
+        params = []
+        for name, p in sig.parameters.items():
+            # 隐藏系统注入的内部参数
+            if name in ("session", "run_dir"):
+                continue
+
+            p_str = name
+            # 处理默认值
+            if p.default is not inspect.Parameter.empty:
+                p_str += f"={repr(p.default)}"
+            # 处理 **kwargs
+            elif p.kind == inspect.Parameter.VAR_KEYWORD:
+                p_str = "**kwargs"
+
+            params.append(p_str)
+
+        return f"({', '.join(params)})"
+
     def build_capabilities_list(self, kind: Literal["async", "sync"]) -> str:
-        """根据类型（异步或同步）生成高层能力概览。"""
+        """根据类型生成高质量的能力清单。"""
         lines = []
         for spec in self._tools.values():
             is_async = inspect.iscoroutinefunction(inspect.unwrap(spec.fn))
 
+            # 使用精简后的签名
+            clean_sig = self._get_clean_signature(spec.fn)
+
             if kind == "async" and is_async:
-                lines.append(f"- `await {spec.name}{spec.signature}`: {spec.description}")
+                lines.append(f"- `await {spec.name}{clean_sig}`: {spec.description}")
             elif kind == "sync" and not is_async:
-                lines.append(f"- `{spec.name}{spec.signature}`: {spec.description}")
+                lines.append(f"- `{spec.name}{clean_sig}`: {spec.description}")
 
-        # 特殊处理非注册工具
+        # 补全内置异步工具
         if kind == "async":
-            lines.append("- `await asyncio.sleep(n)`: 显式等待 n 秒。")
+            lines.append("- `await asyncio.sleep(n)`: 显式等待 n 秒，常用于确保页面渲染完成。")
 
-        return "\n".join(lines) if lines else "- (暂无)"
+        return "\n".join(lines) if lines else "- (无)"
 
     def as_namespace_dict(self) -> dict[str, Callable]:
         """返回供 executor namespace 使用的 {name: fn} 字典。"""

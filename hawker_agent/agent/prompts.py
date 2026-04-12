@@ -14,7 +14,6 @@ _env = Environment(
 def build_system_prompt(
     async_capabilities: str,
     sync_capabilities: str,
-    tool_desc: str,
     instructions: str = ""
 ) -> str:
     """渲染系统提示词模板。"""
@@ -22,6 +21,5 @@ def build_system_prompt(
     return template.render(
         async_capabilities=async_capabilities,
         sync_capabilities=sync_capabilities,
-        tool_desc=tool_desc,
         instructions=instructions
     )

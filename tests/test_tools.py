@@ -92,9 +92,7 @@ class TestBuildSystemPrompt:
         result = build_system_prompt(
             async_capabilities="await nav()",
             sync_capabilities="clean_items()",
-            tool_desc="- nav(url) -> str: 导航"
         )
-        assert "- nav(url) -> str: 导航" in result
         assert "await nav()" in result
         assert "clean_items()" in result
         assert "爬虫智能体" in result
@@ -103,7 +101,6 @@ class TestBuildSystemPrompt:
         result = build_system_prompt(
             async_capabilities="caps_a",
             sync_capabilities="caps_s",
-            tool_desc="tools here",
             instructions="自定义指令",
         )
         assert "自定义指令" in result
@@ -112,9 +109,8 @@ class TestBuildSystemPrompt:
         result = build_system_prompt(
             async_capabilities="caps_a",
             sync_capabilities="caps_s",
-            tool_desc="tools"
         )
-        assert "效率规则" in result
+        assert "Invocation Protocol" in result
 
 
 # ─── namespace ──────────────────────────────────────────────────

@@ -54,11 +54,11 @@ def register_browser_tools(
         return _handle_dom_result(result)
 
     async def fill_input(index: int, text: str) -> str:
-        """通过 DOM 索引 [i_*] 向输入框填写文本（模拟逐字输入，兼容 React/Vue）。"""
+        """通过 DOM 索引 [i_*] 向输入框填写文本"""
         return await actions.fill_input(session, index, text)
 
     async def browser_download(url: str, filename: str | None = None, **kwargs: object) -> str:
-        """利用浏览器会话下载文件（自动继承 Cookie/登录态，推荐用于 PDF/图片下载）。"""
+        """利用浏览器会话下载文件"""
         from hawker_agent.tools import http_tools
         # 1. 提取 Cookie
         cookies = await actions.get_cookies(session)

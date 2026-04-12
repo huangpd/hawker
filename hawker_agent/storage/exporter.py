@@ -80,8 +80,15 @@ def save_result_json(
 ) -> Path:
     """保存结果 JSON 文件，并清理 checkpoint。"""
     path = run_dir / "result.json"
+    
+    # 提示：result.json 的 'result' 字段应仅作为语义总结。
+    # 如果 answer 过长（可能包含冗余样本或大块文本），进行摘要式截断。
+    summary = answer
+    if len(answer) > 2000:
+        summary = answer[:1990] + "... [摘要已截断，详见 items 字段]"
+
     data = {
-        "result": answer,
+        "result": summary,
         "items": items,
         "items_count": len(items),
     }

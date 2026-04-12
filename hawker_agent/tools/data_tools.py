@@ -3,6 +3,10 @@ from __future__ import annotations
 import json
 import os
 import re
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from hawker_agent.tools.registry import ToolRegistry
 
 
 def get_type_signature(d: dict, max_keys: int = 10) -> str:
@@ -87,3 +91,13 @@ def save_file(data: str, filename: str, run_dir: str) -> str:
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(data)
         return f"[OK] 已保存文本到 {filepath}"
+
+
+def register_data_tools(registry: ToolRegistry) -> None:
+    """将数据处理辅助工具注册到工具注册表。"""
+    registry.register(clean_items)
+    registry.register(ensure)
+    registry.register(normalize_items)
+    registry.register(save_file)
+    registry.register(summarize_json)
+    registry.register(parse_http_response)

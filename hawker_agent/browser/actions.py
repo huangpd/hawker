@@ -6,6 +6,7 @@ import logging
 import re
 import urllib.parse
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from hawker_agent.browser.cdp import get_cdp, run_js
@@ -31,7 +32,7 @@ class DomActionResult:
 
 
 async def _get_dom_state(session: BrowserSession) -> str:
-    """调用 browser_use 的 DomService 获取完整的 DOM 状态表示。"""
+    """调用 browser_use 的 DomService 获取完整的 DOM 状态表示，并增加细腻的感知上下文。"""
     try:
         state = await session.raw.get_browser_state_summary(include_screenshot=False)
         assert state.dom_state is not None
@@ -41,7 +42,9 @@ async def _get_dom_state(session: BrowserSession) -> str:
 
         lines = [f"[OK] {state.title}", f"URL: {state.url}"]
 
-        # 滚动位置
+        # 1. 空间感知：滚动位置元数据
+        pages_above = 0.0
+        pages_below = 0.0
         if state.page_info:
             pi = state.page_info
             vh = pi.viewport_height or 1
@@ -50,25 +53,46 @@ async def _get_dom_state(session: BrowserSession) -> str:
             if pages_above > 0 or pages_below > 0:
                 lines.append(f"滚动: 上方 {pages_above:.1f} 页, 下方 {pages_below:.1f} 页")
 
+        # 2. 加载感知：网络请求监控
+        if state.pending_network_requests:
+            lines.append(f"⚠️ 页面仍在加载: {len(state.pending_network_requests)} 个待处理请求")
+            # 显示前 3 个耗时请求以辅助决策
+            sorted_requests = sorted(state.pending_network_requests, key=lambda x: x.get('duration', 0), reverse=True)
+            for req in sorted_requests[:3]:
+                url_short = req['url'][:60] + "..." if len(req['url']) > 60 else req['url']
+                duration = req.get('duration', 0)
+                lines.append(f"  - [{duration:.1f}s] {url_short}")
+
         # 多标签页
         if len(state.tabs) > 1:
             lines.append(f"标签页: {len(state.tabs)} 个")
             for tab in state.tabs[:5]:
                 lines.append(f"  - {tab.target_id[-4:]}: {tab.title[:30]}")
 
-        # 待加载请求
-        if state.pending_network_requests:
-            lines.append(f"加载中: {len(state.pending_network_requests)} 个网络请求")
-
-        # DOM 结构（压缩缩进 + 截断保护）
+        # 3.2 压缩重复的空白
         dom_repr = re.sub(r"\n[\t ]+", "\n", dom_repr)
+        
+        dom_parts = []
+        if pages_above > 0.1:
+            dom_parts.append(f"\n... ({pages_above:.1f} pages of content above current view) ...\n")
+        
+        dom_parts.append(dom_repr)
+        
+        if pages_below > 0.1:
+            dom_parts.append(f"\n... ({pages_below:.1f} pages of content below current view) ...\n")
+        else:
+            dom_parts.append("\n[End of page]")
+
+        full_dom = "".join(dom_parts)
+        
+        # 截断保护
         lines.append("")
         max_dom = 15000
-        if len(dom_repr) > max_dom:
-            lines.append(dom_repr[:max_dom])
-            lines.append(f"\n[DOM 截断，共 {len(dom_repr)} 字符，用 js() 探索更多]")
+        if len(full_dom) > max_dom:
+            lines.append(full_dom[:max_dom])
+            lines.append(f"\n[DOM 截断，共 {len(full_dom)} 字符，用 js() 探索更多]")
         else:
-            lines.append(dom_repr)
+            lines.append(full_dom)
 
         return "\n".join(lines)
     except Exception as e:
@@ -317,14 +341,26 @@ async def fill_input(session: BrowserSession, index: int, text: str) -> str:
     return f"[OK] 已在 [i_{index}] 输入 '{masked}' ({len(text)}字符)"
 
 
-async def browser_download(session: BrowserSession, url: str) -> str:
-    """通过浏览器会话下载文件。文件将自动归档到任务目录。"""
-    # 逻辑：利用页面跳转触发下载
-    # 注意：Playwright 会自动处理带有 Content-Disposition: attachment 的响应
-    await session.raw.navigate_to(url)
-    # 给一点缓冲时间让下载开始
-    await asyncio.sleep(2)
-    return f"[OK] 已尝试下载: {url}，请检查归档目录。"
+async def get_cookies(session: BrowserSession) -> list[dict]:
+    """
+    提取当前浏览器会话的所有 Cookie。
+    采用多级降级策略确保在不同版本的驱动下均能稳定获取。
+    """
+    # 50年架构师提示：Cookie 是会话的灵魂，必须保证提取的鲁棒性
+    playwright_cookies = []
+    try:
+        if hasattr(session.raw, "get_cookies"):
+            playwright_cookies = await session.raw.get_cookies()
+        elif hasattr(session.raw, "_cdp_get_cookies"):
+            playwright_cookies = await session.raw._cdp_get_cookies()
+        elif hasattr(session.raw, "cookies"):
+            cookies_attr = session.raw.cookies
+            playwright_cookies = await cookies_attr() if callable(cookies_attr) else cookies_attr
+    except Exception as e:
+        logger.error("获取 Cookie 失败: %s", e)
+    
+    emit_observation(f"[get_cookies] 已提取 {len(playwright_cookies)} 条 Cookie")
+    return playwright_cookies
 
 
 async def get_network_log(

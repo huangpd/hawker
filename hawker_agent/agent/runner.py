@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 from hawker_agent.agent.executor import execute
-from hawker_agent.agent.namespace import build_namespace
+from hawker_agent.agent.namespace import HawkerNamespace, build_namespace
 from hawker_agent.agent.parser import parse_response
 from hawker_agent.agent.prompts import build_system_prompt
 from hawker_agent.browser.session import BrowserSession
@@ -83,13 +83,13 @@ def _build_result(
     total_steps: int,
     log_path: Path,
     task: str,
-    namespace: dict[str, object] | None = None,
+    namespace: HawkerNamespace | None = None,
 ) -> CodeAgentResult:
     """构建最终结果对象并执行持久化。"""
     total_duration = time.time() - state.started_at
     final_answer = state.answer
 
-    # 结果恢复逻辑（迁移自 _recover_partial_result）
+    # 结果恢复逻辑（当任务非正常结束时生成总结）
     if stop_reason != "done" and not final_answer:
         parts = [f"停止原因: {stop_reason}。执行了 {total_steps} 步。"]
         if state.items:
@@ -99,6 +99,7 @@ def _build_result(
             parts.insert(0, "[任务未完成]")
             parts.append("未采集到有效数据。")
 
+        # 扫描内存中的半成品数据 (迁移自 main.py 逻辑)
         if namespace:
             skip_names = {
                 "json", "asyncio", "csv", "re", "datetime", "Path", "requests", "httpx",
@@ -108,20 +109,21 @@ def _build_result(
                 "append_items", "save_checkpoint", "final_answer",
                 "async_nav", "async_dom_state", "async_nav_search", "async_js",
                 "async_click", "async_click_index", "async_fill_input", "async_get_network_log",
-                "browser_download", "download_file", "run_dir"
+                "browser_download", "download_file", "run_dir", "get_cookies", "get_selector_from_index"
             }
             data_vars = []
-            for name in sorted(namespace.keys()):
-                if name.startswith("_") or name in skip_names or callable(namespace[name]):
+            # 扫描持久化层 (session)
+            for name, val in sorted(namespace.session.items()):
+                if name.startswith("_") or name in skip_names or callable(val):
                     continue
-                val = namespace[name]
                 if isinstance(val, (list, dict)) and val:
                     data_vars.append(f"  - {name}: {type(val).__name__}, {len(val)} 项")
 
             if data_vars:
                 parts.append("\nnamespace 中可能包含部分数据的变量:")
                 parts.extend(data_vars)
-                
+
+        # 因为 items 字段已经包含了完整数据。保持 answer 作为纯语义总结。
         final_answer = " ".join(parts[:3]) + ("\n" + "\n".join(parts[3:]) if len(parts) > 3 else "")
 
     # 执行持久化
@@ -170,13 +172,20 @@ async def run(
     llm = LLMClient(cfg)
     reg = registry or ToolRegistry()
     
-    # 加载默认指令
-    instructions_path = Path(__file__).parent.parent / "templates" / "default_instructions.txt"
-    instructions = instructions_path.read_text(encoding="utf-8") if instructions_path.exists() else ""
+    # 加载指令 (默认指令 + 用户自定义)
+    tpl_dir = Path(__file__).parent.parent / "templates"
+    default_path = tpl_dir / "default_instructions.txt"
+    custom_path = tpl_dir / "custom_instructions.txt"
+    
+    instructions = default_path.read_text(encoding="utf-8") if default_path.exists() else ""
+    if custom_path.exists():
+        custom_content = custom_path.read_text(encoding="utf-8").strip()
+        if custom_content:
+            instructions += "\n\n" + custom_content
 
     history = CodeAgentHistoryList.from_task(
         task,
-        system_prompt=build_system_prompt(reg.build_description(), instructions=instructions),
+        system_prompt="", # 稍后在工具注册完后再填充
         compression_threshold=cfg.message_compression_tokens,
     )
     # 为 history 注入 token 计数函数
@@ -190,15 +199,28 @@ async def run(
         if hasattr(br, "target_dir"):
             br.target_dir = run_dir
             
-        # 注册标准工具集
+        # 1. 注册标准工具集
         from hawker_agent.tools.browser_tools import register_browser_tools
         from hawker_agent.tools.http_tools import register_http_tools
+        from hawker_agent.tools.data_tools import register_data_tools
+        from hawker_agent.agent.namespace import register_core_actions
         
+        register_core_actions(reg, state, str(run_dir))
         register_browser_tools(reg, br, history)
         register_http_tools(reg)
+        register_data_tools(reg)
+
+        # 2. 生成并注入最终提示词 (此时分类生成才准确)
+        history.system_prompt = build_system_prompt(
+            async_capabilities=reg.build_capabilities_list("async"),
+            sync_capabilities=reg.build_capabilities_list("sync"),
+            tool_desc=reg.build_description(), 
+            instructions=instructions
+        )
 
         # 构建代码执行命名空间
-        namespace = build_namespace(state, reg.as_namespace_dict(), str(run_dir))
+        system_dict = build_namespace(state, reg.as_namespace_dict(), str(run_dir))
+        namespace = HawkerNamespace(system_dict, str(run_dir))
 
         for step in range(1, max_steps + 1):
             with state.bind_log_context(step):
@@ -274,11 +296,23 @@ async def run(
 
                 # 8. 更新对话历史
                 history.add_assistant(llm_response.text)
+                
+                # 获取持久化变量摘要
+                session_vars = namespace.get_llm_view()
+                var_summary = []
+                for k, v in sorted(session_vars.items()):
+                    if k == "run_dir": continue
+                    v_str = str(len(v)) + " 项" if isinstance(v, (list, dict)) else str(v)[:30]
+                    var_summary.append(f"{k}: {v_str}")
+                
+                var_line = f" | 变量: {', '.join(var_summary)}" if var_summary else ""
+                
                 # 注入当前状态摘要和执行输出
                 status_line = (
                     f"[状态] 已采集: {len(state.items)}条"
                     f" | 步骤: {step}/{max_steps}"
                     f" | token: {state.token_stats.total_tokens:,}/{cfg.max_total_tokens:,}"
+                    f"{var_line}"
                 )
                 # observation 进历史前强制截断至 1500 字符，防止长列表拖垮上下文
                 from hawker_agent.agent.compressor import truncate_output

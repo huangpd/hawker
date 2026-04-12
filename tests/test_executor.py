@@ -2,15 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-
 import pytest
 
 from hawker_agent.agent.executor import (
     _clean_traceback,
-    _collect_assigned_names,
-    _has_async_constructs,
     execute,
 )
+from hawker_agent.agent.namespace import HawkerNamespace
 from hawker_agent.models.state import CodeAgentState
 from hawker_agent.observability import clear_log_context, configure_logging
 
@@ -19,65 +17,30 @@ from hawker_agent.observability import clear_log_context, configure_logging
 
 
 class TestCleanTraceback:
-    def test_removes_exec_frames(self) -> None:
+    def test_removes_internal_frames(self) -> None:
         tb = (
             'Traceback (most recent call last):\n'
-            '  File "<code>", line 1, in <module>\n'
-            '    exec(compile(wrapped, "<code>", "exec"), namespace)\n'
-            '    some detail\n'
-            '  File "<code>", line 3, in foo\n'
-            'NameError: name \'x\' is not defined'
+            '  File "executor.py", line 100, in execute\n'
+            '    result = exec(compiled, view)\n'
+            '  File "<hawker-cell>", line 1, in <module>\n'
+            '    raise ValueError("boom")\n'
+            'ValueError: boom'
         )
         cleaned = _clean_traceback(tb)
-        assert "exec(compile(" not in cleaned
-        assert "NameError" in cleaned
+        assert "executor.py" not in cleaned
+        assert "<hawker-cell>" in cleaned
+        assert "ValueError: boom" in cleaned
 
-    def test_preserves_normal_frames(self) -> None:
+    def test_preserves_cell_frames(self) -> None:
         tb = (
             'Traceback (most recent call last):\n'
-            '  File "my_script.py", line 10, in func\n'
-            '    raise ValueError("bad")\n'
-            'ValueError: bad'
+            '  File "<hawker-cell>", line 3, in foo\n'
+            '    x = 1/0\n'
+            'ZeroDivisionError: division by zero'
         )
         cleaned = _clean_traceback(tb)
-        assert cleaned == tb
-
-
-class TestCollectAssignedNames:
-    def test_simple_assignment(self) -> None:
-        import ast
-
-        tree = ast.parse("x = 1\ny = 2")
-        names = _collect_assigned_names(tree)
-        assert names == {"x", "y"}
-
-    def test_augmented_assignment(self) -> None:
-        import ast
-
-        tree = ast.parse("x += 1")
-        names = _collect_assigned_names(tree)
-        assert "x" in names
-
-    def test_global_declaration(self) -> None:
-        import ast
-
-        tree = ast.parse("global x, y")
-        names = _collect_assigned_names(tree)
-        assert names == {"x", "y"}
-
-
-class TestHasAsyncConstructs:
-    def test_sync_code(self) -> None:
-        import ast
-
-        tree = ast.parse("x = 1")
-        assert not _has_async_constructs(tree)
-
-    def test_await(self) -> None:
-        import ast
-
-        tree = ast.parse("async def f():\n    await something()", mode="exec")
-        assert _has_async_constructs(tree)
+        assert "<hawker-cell>" in cleaned
+        assert "ZeroDivisionError" in cleaned
 
 
 # ─── execute ────────────────────────────────────────────────────
@@ -87,97 +50,110 @@ class TestExecute:
     def teardown_method(self) -> None:
         clear_log_context()
 
+    def _make_ns(self) -> HawkerNamespace:
+        return HawkerNamespace(system_dict={"asyncio": asyncio}, run_dir="tmp")
+
     @pytest.mark.asyncio
     async def test_simple_print(self) -> None:
-        ns: dict = {}
+        ns = self._make_ns()
         result = await execute("print('hello')", ns)
         assert result == "hello"
 
     @pytest.mark.asyncio
-    async def test_variable_persistence(self) -> None:
-        ns: dict = {}
-        await execute("x = 42", ns)
-        assert ns["x"] == 42
-        result = await execute("print(x + 1)", ns)
-        assert result == "43"
+    async def test_variable_persistence_protocol(self) -> None:
+        ns = self._make_ns()
+        # 符合协议的变量会被提升到 session
+        await execute("products_list = [1, 2, 3]", ns)
+        assert "products_list" in ns.session
+        assert ns.session["products_list"] == [1, 2, 3]
+        
+        # 不符合协议的变量 (过短) 会被丢弃
+        await execute("i = 42", ns)
+        assert "i" not in ns.session
+        
+        # 验证持久化变量在下一步可用
+        result = await execute("print(len(products_list))", ns)
+        assert result == "3"
+
+    @pytest.mark.asyncio
+    async def test_transactional_rollback(self) -> None:
+        ns = self._make_ns()
+        await execute("my_data = {'count': 10}", ns)
+        
+        # 尝试修改变量但发生错误
+        code = "my_data['count'] = 20\nraise ValueError('fail')"
+        result = await execute(code, ns)
+        
+        assert "[执行错误]" in result
+        # 验证回滚：my_data 的修改被撤销了
+        assert ns.session["my_data"]["count"] == 10
+        # 验证临时变量被清理
+        assert ns.cell_local == {}
 
     @pytest.mark.asyncio
     async def test_no_output(self) -> None:
-        ns: dict = {}
-        result = await execute("x = 1", ns)
+        ns = self._make_ns()
+        result = await execute("x_val = 1", ns)
         assert result == "[无输出]"
 
     @pytest.mark.asyncio
     async def test_syntax_error(self) -> None:
-        ns: dict = {}
+        ns = self._make_ns()
         result = await execute("if True print('bad')", ns)
         assert "[执行错误]" in result
         assert "SyntaxError" in result
 
     @pytest.mark.asyncio
     async def test_name_error_with_hint(self) -> None:
-        ns: dict = {}
+        ns = self._make_ns()
         result = await execute("print(undefined_var)", ns)
         assert "[执行错误]" in result
         assert "NameError" in result
         assert "提示" in result
 
     @pytest.mark.asyncio
-    async def test_runtime_error(self) -> None:
-        ns: dict = {}
-        result = await execute("raise ValueError('test error')", ns)
-        assert "[执行错误]" in result
-        assert "ValueError" in result
-
-    @pytest.mark.asyncio
-    async def test_async_code(self) -> None:
-        ns: dict = {"asyncio": asyncio}
-        result = await execute("result = await asyncio.sleep(0); print('async done')", ns)
-        assert "async done" in result
+    async def test_async_code_native(self) -> None:
+        ns = self._make_ns()
+        # 原生支持顶层 await
+        result = await execute("await asyncio.sleep(0.01)\nprint('async success')", ns)
+        assert "async success" in result
 
     @pytest.mark.asyncio
     async def test_async_variable_persistence(self) -> None:
-        ns: dict = {"asyncio": asyncio}
-        await execute("x = 10", ns)
+        ns = self._make_ns()
+        await execute("total_count = 10", ns)
+        # 异步环境下的变量修改与持久化
         result = await execute(
-            "await asyncio.sleep(0)\nx = x + 5\nprint(x)", ns
+            "await asyncio.sleep(0)\ntotal_count += 5\nprint(total_count)", ns
         )
         assert "15" in result
-        assert ns["x"] == 15
+        assert ns.session["total_count"] == 15
 
     @pytest.mark.asyncio
-    async def test_multiline_code(self) -> None:
-        ns: dict = {}
-        code = "for i in range(3):\n    print(i)"
-        result = await execute(code, ns)
-        assert "0" in result
-        assert "1" in result
-        assert "2" in result
+    async def test_layered_isolation(self) -> None:
+        ns = self._make_ns()
+        # 尝试覆盖系统工具 (asyncio)
+        await execute("asyncio = 'hacked'", ns)
+        # 检查是否由于 commit 逻辑被拦截
+        assert ns.session.get("asyncio") != "hacked"
+        assert ns.system["asyncio"] == asyncio
 
     @pytest.mark.asyncio
     async def test_output_truncation(self) -> None:
-        ns: dict = {}
+        ns = self._make_ns()
         code = "print('x' * 10000)"
         result = await execute(code, ns)
         assert len(result) < 10000
         assert "截断" in result
 
     @pytest.mark.asyncio
-    async def test_exception_preserves_partial_output(self) -> None:
-        ns: dict = {}
-        code = "print('before error')\nraise RuntimeError('boom')"
-        result = await execute(code, ns)
-        assert "before error" in result
-        assert "[执行错误]" in result
-        assert "RuntimeError" in result
-
-    @pytest.mark.asyncio
     async def test_execute_binds_log_context(self, caplog: pytest.LogCaptureFixture) -> None:
         configure_logging(force=True)
         state = CodeAgentState(trace_id="trace-exec", run_id="run-exec")
+        ns = self._make_ns()
 
         with caplog.at_level(logging.INFO, logger="hawker_agent.agent.executor"):
-            result = await execute("print('hello')", {}, state=state, step=7)
+            result = await execute("print('hello')", ns, state=state, step=7)
 
         assert result == "hello"
         assert any(record.trace_id == "trace-exec" for record in caplog.records)

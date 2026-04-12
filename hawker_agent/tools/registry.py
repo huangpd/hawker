@@ -41,13 +41,30 @@ class ToolRegistry:
         return fn
 
     def build_description(self) -> str:
-        """生成注入 system prompt 的工具描述文本。"""
+        """生成详细的工具文档（包含参数、文档字符串等）。"""
         lines = []
         for spec in self._tools.values():
-            is_async = inspect.iscoroutinefunction(spec.fn)
+            is_async = inspect.iscoroutinefunction(inspect.unwrap(spec.fn))
             prefix = "async " if is_async else ""
             lines.append(f"- {prefix}{spec.name}{spec.signature} -> {spec.return_type}: {spec.description}")
         return "\n".join(lines)
+
+    def build_capabilities_list(self, kind: Literal["async", "sync"]) -> str:
+        """根据类型（异步或同步）生成高层能力概览。"""
+        lines = []
+        for spec in self._tools.values():
+            is_async = inspect.iscoroutinefunction(inspect.unwrap(spec.fn))
+
+            if kind == "async" and is_async:
+                lines.append(f"- `await {spec.name}{spec.signature}`: {spec.description}")
+            elif kind == "sync" and not is_async:
+                lines.append(f"- `{spec.name}{spec.signature}`: {spec.description}")
+
+        # 特殊处理非注册工具
+        if kind == "async":
+            lines.append("- `await asyncio.sleep(n)`: 显式等待 n 秒。")
+
+        return "\n".join(lines) if lines else "- (暂无)"
 
     def as_namespace_dict(self) -> dict[str, Callable]:
         """返回供 executor namespace 使用的 {name: fn} 字典。"""

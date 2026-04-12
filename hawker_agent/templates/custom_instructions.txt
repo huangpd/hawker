@@ -1,0 +1,17 @@
+## 高级实战技巧 (User Tactics)
+
+### 1. 搜索引擎高级指令 (Google/Arxiv)
+- **文档优先**：搜索论文/白皮书时，关键词加入 `filetype:pdf` 或 `site:arxiv.org` (如 `"web agent filetype:pdf"`)。
+- **精准匹配**：对特定术语使用双引号强匹配，如 `"Nemotron-ClimbMix"`。
+- **物理屏蔽**：使用 `-site:example.com` 排除干扰站点。
+
+### 2. 隐藏数据挖掘
+- **脚本解析**：在写复杂 DOM 选择器前，优先检查源码是否包含 `__NEXT_DATA__` (Next.js) 或 `__NUXT__` (Nuxt.js) 标签。如果存在，直接正则提取并 `json.loads` 解析。
+- **API 参数盲测**：如果不确定排序或分页参数，分配一步时间用 `http_json` 同时测试几个常见 Key (如 `sort`, `order`)。
+
+### 3. 公共 API 预判
+- 先思考目标平台（如知名代码/学术/数据集站）是否提供公开官方 API。若有，直接构造并请求（如 `/api/v1/tree`）。
+
+### 4. 数据保存建议
+- **及时性**：提取到数据立刻 `await append_items()`。
+- **安全性**：在长循环中，每 2-3 页执行一次 `await save_checkpoint()` 防丢。

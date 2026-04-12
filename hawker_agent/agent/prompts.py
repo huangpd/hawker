@@ -11,7 +11,17 @@ _env = Environment(
 )
 
 
-def build_system_prompt(tool_desc: str, instructions: str = "") -> str:
+def build_system_prompt(
+    async_capabilities: str,
+    sync_capabilities: str,
+    tool_desc: str,
+    instructions: str = ""
+) -> str:
     """渲染系统提示词模板。"""
     template = _env.get_template("system_prompt.jinja2")
-    return template.render(tool_desc=tool_desc, instructions=instructions)
+    return template.render(
+        async_capabilities=async_capabilities,
+        sync_capabilities=sync_capabilities,
+        tool_desc=tool_desc,
+        instructions=instructions
+    )

@@ -78,9 +78,22 @@ def summarize_json(data: object) -> str:
     return f"[http_json] {type(data).__name__}"
 
 
+def _safe_join(run_dir: str, filename: str) -> str:
+    """Safely join run_dir and filename, preventing path traversal."""
+    # Strip any directory components — only keep the basename
+    safe_name = os.path.basename(filename)
+    if not safe_name:
+        safe_name = "untitled"
+    resolved = os.path.normpath(os.path.join(run_dir, safe_name))
+    # Final guard: ensure the resolved path is inside run_dir
+    if not resolved.startswith(os.path.normpath(run_dir) + os.sep) and resolved != os.path.normpath(run_dir):
+        raise ValueError(f"Path traversal blocked: {filename!r} resolves outside run_dir")
+    return resolved
+
+
 def save_file(data: str, filename: str, run_dir: str) -> str:
     """保存数据到 run_dir 下的文件。"""
-    filepath = os.path.join(run_dir, filename)
+    filepath = _safe_join(run_dir, filename)
     try:
         parsed = json.loads(data)
         with open(filepath, "w", encoding="utf-8") as f:

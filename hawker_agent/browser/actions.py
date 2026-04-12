@@ -28,6 +28,11 @@ class DomActionResult:
     dom: str | None = None
 
 
+def _escape_js_string(value: str) -> str:
+    """Escape a value for safe interpolation inside a single-quoted JS string literal."""
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
 # ─── 私有辅助 ──────────────────────────────────────────────────
 
 
@@ -195,11 +200,12 @@ async def js(session: BrowserSession, code: str) -> str:
 
 async def click(session: BrowserSession, selector: str, index: int = 0) -> DomActionResult:
     """点击页面上匹配 CSS 选择器的元素。"""
+    safe_selector = _escape_js_string(selector)
     raw = await run_js(
         session,
         f"""(function(){{
-        var els=document.querySelectorAll('{selector}');
-        if(els.length===0) return JSON.stringify({{error:"未找到元素: {selector}"}});
+        var els=document.querySelectorAll('{safe_selector}');
+        if(els.length===0) return JSON.stringify({{error:"未找到元素: {safe_selector}"}});
         var idx={index};
         if(idx>=els.length) idx=els.length-1;
         var el=els[idx];
@@ -370,9 +376,10 @@ async def get_network_log(
 ) -> list:
     """读取页面拦截到的 Fetch/XHR 网络请求日志。"""
     if filter_str:
+        safe_filter = _escape_js_string(filter_str)
         js_code = f"""(function(){{
 var log=window.__netlog||[];
-var f='{filter_str}'.toLowerCase();
+var f='{safe_filter}'.toLowerCase();
 var r=log.filter(function(e){{return e.url.toLowerCase().indexOf(f)!==-1;}});
 return JSON.stringify(r);
 }})()"""

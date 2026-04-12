@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
+import urllib.parse as _urlparse
 from typing import Any
 
 import httpx
@@ -13,6 +15,33 @@ from hawker_agent.tools.registry import ToolRegistry
 logger = logging.getLogger(__name__)
 
 _client: httpx.AsyncClient | None = None
+
+
+_BLOCKED_HOSTS = {
+    "metadata.google.internal",
+    "metadata.goog",
+}
+
+
+def _is_private_ip(host: str) -> bool:
+    """Return True if *host* resolves to a private, loopback, or link-local address."""
+    try:
+        addr = ipaddress.ip_address(host)
+        return addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved
+    except ValueError:
+        return False
+
+
+def _validate_url(url: str) -> None:
+    """Block requests to private networks, cloud metadata endpoints, and other reserved ranges."""
+    parsed = _urlparse.urlparse(url)
+    hostname = (parsed.hostname or "").lower().strip(".")
+    if not hostname:
+        raise ValueError(f"Invalid URL (no hostname): {url}")
+    if hostname in _BLOCKED_HOSTS:
+        raise ValueError(f"Blocked request to reserved host: {hostname}")
+    if _is_private_ip(hostname):
+        raise ValueError(f"Blocked request to private/reserved IP: {hostname}")
 
 
 def _get_client() -> httpx.AsyncClient:
@@ -61,6 +90,7 @@ async def http_request(
 
     h.setdefault("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36")
 
+    _validate_url(url)
     client = _get_client()
     try:
         if method.upper() == "POST":
@@ -130,6 +160,7 @@ async def download_file(
             c = json.loads(cookies) if isinstance(cookies, str) else cookies
         except Exception: pass
 
+    _validate_url(url)
     try:
         method = "POST" if request_body else "GET"
         async with client.stream(method, url, cookies=c, content=request_body) as resp:
@@ -152,13 +183,14 @@ async def download_file(
 
             # 移除非法字符
             final_filename = re.sub(r'[\\/*?:"<>|]', '_', final_filename)
+            # Strip path traversal: only keep the basename
+            final_filename = Path(final_filename).name or "downloaded_file"
             
             # 2. 处理保存路径
-            path = Path(final_filename)
-            if run_dir and not path.is_absolute():
-                save_path = Path(run_dir) / path
+            if run_dir:
+                save_path = Path(run_dir) / final_filename
             else:
-                save_path = path
+                save_path = Path(final_filename)
                 
             save_path.parent.mkdir(parents=True, exist_ok=True)
                 

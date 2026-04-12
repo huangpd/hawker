@@ -186,7 +186,7 @@ class TestBuildSystemPrompt:
 
     def test_default_no_instructions(self) -> None:
         result = build_system_prompt(tool_desc="tools")
-        assert "效率规则" in result
+        assert "执行策略" in result
 
 
 # ─── namespace ──────────────────────────────────────────────────

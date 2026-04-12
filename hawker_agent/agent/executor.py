@@ -53,7 +53,6 @@ async def execute(
         logger.info("代码执行开始: chars=%d", len(code))
 
         # 事务快照：session 层深拷贝
-        # 50年架构师提示：只有深拷贝才能确保嵌套数据结构被回滚
         try:
             session_snapshot = copy.deepcopy(namespace.session)
         except Exception as e:
@@ -77,7 +76,7 @@ async def execute(
                 
                 # 核心：在 ALLOW_TOP_LEVEL_AWAIT 模式下，如果代码含 await，
                 # 使用 eval() 执行编译后的代码块可以正确返回协程对象。
-                # 50年架构师提示：eval 支持执行以 'exec' 模式编译的代码对象。
+                # 提示：eval 支持执行以 'exec' 模式编译的代码对象。
                 maybe_coro = eval(compiled, view)
                 
                 if inspect.isawaitable(maybe_coro):

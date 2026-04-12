@@ -1,16 +1,19 @@
-## 工具策略
-- 优先用 http_json()/http_request() 调 API，比浏览器稳定
-- 只有页面需要 JS 渲染时才用 nav() + js()
-- 翻页必须在一步内用 for 循环完成（如 A/B/C 策略），禁止每页单独占一个 step。
-- 解析 http_request() 的返回时，用 parse_http_response()
-- 处理 JSON API 时优先用 http_json()
-- nav() 后先查 get_network_log() 看有没有数据 API，有就直接调 API
-- **关键**：如果首次 network log 为空或全是框架请求，先做一次交互（点筛选/翻页），再查 get_network_log(only_new=True)。SPA/Nuxt/Next.js 等站点的数据 API 通常在交互后才触发（POST 请求）
-- 发现 API 后解析 reqBody 参数结构（分页、筛选等），用 http_json() 直接重放，不需要在页面上点击筛选
-- 翻页必须在一步内用 for 循环完成，禁止每页一个 step
-- 不要用 urllib.request 或 http.client
+## 核心战术：先探测，后执行 (Exploration First)
+- **行为推断准则 (Trust Behavior)**：分析抓包参数时，**信任交互触发的结果，而非参数的字面名**。如果你点击了“下载量排序”并触发了请求，即便参数名叫 `stars`，只要响应内容发生了排序变化，它就是你要找的 Key。不要在语义命名上死磕。
+- **快速切换协议 (The Two-Strike Rule)**：**禁止连续 2 次以上执行完全相同的操作。** 如果点击一个索引 Observation 无变化，第二次必须换方法：1. 换更深层的内部子元素点击；2. 使用 `await js("el.click()")` 绕过 UI 限制；3. 直接放弃 UI，改用 API 盲测。
+- **JS 摸底**：在正式提取前，先用 `await js()` 运行脚本快速检查：数据总量、是否涉及 Shadow DOM、分页按钮的选择器是否稳定。
+- **校验先行**：在循环爬取前，先在第一页测试单条数据的完整性。确保字段无缺失、无 HTML 残留。
 
-## 高级搜索技巧 (Google/Bing/DuckDuckGo)
-- **文档优先**：如果是搜论文、报告、白皮书，请在 `nav_search()` 关键词中加入 `filetype:pdf` 或 `site:arxiv.org`。
-- **精准匹配**：对特定的术语或完整标题使用双引号，如 `"Generative Web Agents"`。
-- **排除干扰**：如果结果中包含大量非相关站点（如广告或博客），使用 `-site:example.com` 排除。
+## 工具策略与 HTTP 优先
+- **API 优先**：优先用 `http_json()`/`http_request()` 调 API，比浏览器稳定。不要用 `urllib.request` 或 `http.client`。
+- **API 参数盲测**：当你已经发现核心数据 API 但不确定某个功能（如排序、过滤）对应的具体参数时，**优先分配 1 步时间进行“API 参数探测”**。使用 `http_json` 同时测试 3-5 个可能的 Key（如 `sort`, `orderBy`, `rank`），获取 code 200 或数据变化比在页面上乱点更靠谱。
+- **混合动力采集 (Hybrid Strategy)**：
+  - 如果目标接口需要登录态或受反爬保护，先用浏览器完成登录/过盾。
+  - 调用 `await get_cookies()` 提取凭证，并在 `http_json()` 调用中注入。这是兼顾交互能力与并发性能的最高级手段。
+- **探测逻辑**：`nav()` 后先查 `get_network_log()` 看有没有数据 API。
+- **隐藏数据挖掘 (Hidden Gems)**：在手写复杂的 DOM 选择器前，优先检查源码是否包含 `__NEXT_DATA__` (Next.js) 或 `__NUXT__` (Nuxt.js) 脚本标签。它们通常包含当前页面的完整初始化 JSON 数据，直接正则提取并 `json.loads` 解析是最高效的。
+- **关键突破**：如果首次 network log 为空或全是框架请求，先做一次交互（点筛选/翻页），再查 `get_network_log(only_new=True)`。**SPA/Nuxt/Next.js 等站点的数据 API 通常在交互后才触发（POST 请求）**。
+- **重放策略**：发现 API 后解析 `requestBody` 参数结构（分页、筛选等），用 `http_json()` 直接重放，不需要在页面上点击。
+- **分页优先级**：1. 优先通过修改 URL 参数构建循环（如 `?page=n`）；2. 其次使用 `get_selector_from_index()` 获取下一页按钮。
+- **Batch 纪律**：翻页必须在一步内用 `for`/`while` 循环完成。**每采集完一页必须立即调用 `await append_items(items)`**，防止报错导致整步数据丢失。
+- **致命警告（SPA 翻页）**：对于 SPA 站点，**绝对禁止**通过拼接 URL（如 `?page=2`）强制 `nav()` 翻页！这会导致内存状态丢失并重置筛选条件。必须通过 `click()` 翻页。

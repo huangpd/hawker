@@ -70,7 +70,7 @@ await save_checkpoint()
 - `await click(selector, index=0)`: 点击 CSS 选择器指定的元素。
 - `await click_index(i)`: 通过 DOM 索引 [i_*] 点击元素（推荐）。
 - `await fill_input(i, text)`: 通过 DOM 索引向输入框填写文本。
-- `await browser_download(url)`: 触发浏览器下载，文件将自动归档。
+- `await browser_download(url, filename=None)`: 利用浏览器会话下载文件（推荐用于 PDF/图片）。建议指定 filename 以精准命名。
 - `await get_network_log(filter="", only_new=False)`: 读取 Fetch/XHR 请求日志列表。
 - `await http_request(url, ...)`: 发送异步 HTTP 请求（返回原始文本）。
 - `await http_json(url, ...)`: 发送异步 HTTP 请求并返回解析后的 Python 对象。
@@ -82,10 +82,16 @@ await save_checkpoint()
 ### 同步辅助函数 (禁止 await)
 - `clean_items(items)`, `ensure(cond, msg)`, `parse_http_response(raw)`, `summarize_json(data)`
 
+### 变量持久化协议 (Memory Protocol)
+本环境支持跨步骤变量共享。为了保持上下文干净，系统会自动清理临时变量：
+- **持久化变量**：命名长度 > 1 且不以下划线开头的变量（如 `products`, `page_index`）。它们在每步完成后都会被保存，供下一步使用。
+- **临时变量**：单字符命名的变量（如 `i`, `j`, `k`）或以下划线开头的变量（如 `_tmp`, `_data`）。它们在当前步骤代码执行结束后会被**物理清除**。
+- **🚫 严禁遮蔽 (Shadowing)**：**禁止**在代码中通过 `all_items = []` 或 `run_dir = ""` 等方式重新定义系统全局变量！这会导致你丢失对核心数据的控制权限。直接使用即可。
+
 ### 全局共享变量
-- `all_items`: 列表对象，实时反映已采集的数据。
+- `all_items`: 列表对象，实时反映已采集的数据。**严禁重新初始化**。
 - `run_dir`: 当前任务产物目录。
-- 预装模块: `asyncio`, `json`, `re`, `time`, `base64`, `Path`
+- 预装模块: `asyncio`, `json`, `re`, `time`, `base64`, `Path`, `httpx`
 
 ---
 
@@ -94,5 +100,5 @@ await save_checkpoint()
 
 ---
 
-## 策略建议
+## 效率规则
 {{ instructions }}

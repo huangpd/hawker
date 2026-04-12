@@ -29,6 +29,17 @@ window.fetch=function(){
   if(skip(url)) return origFetch.apply(this,args);
   var options = args[1] || {};
   var method=(options.method || (args[0] && args[0].method) || 'GET').toUpperCase();
+  var reqHeaders = {};
+  try {
+    var h = options.headers || (args[0] && args[0].headers);
+    if (h) {
+      if (typeof h.forEach === 'function') {
+        h.forEach(function(v, k) { reqHeaders[k] = v; });
+      } else {
+        reqHeaders = h;
+      }
+    }
+  } catch(e) { reqHeaders = {parse_error: true}; }
   var rb = '';
   try {
     var b = options.body;
@@ -44,8 +55,9 @@ window.fetch=function(){
     r.text().then(function(body){
       push({
         url:url, method:method, status:r.status, type:'fetch', 
+        headers: reqHeaders, // 捕获请求头
         body:body.substring(0,BODY_MAX), bodyTruncated:body.length>BODY_MAX,
-        reqBody:bodyContent, requestBody:bodyContent, // 双写字段，确保兼容
+        reqBody:bodyContent, requestBody:bodyContent,
         ts:Date.now()
       });
     }).catch(function(){});
@@ -53,7 +65,9 @@ window.fetch=function(){
   });
 };
 var origOpen=XMLHttpRequest.prototype.open, origSend=XMLHttpRequest.prototype.send;
-XMLHttpRequest.prototype.open=function(m,u){this._nl_method=m;this._nl_url=u;return origOpen.apply(this,arguments);};
+XMLHttpRequest.prototype.open=function(m,u){this._nl_method=m;this._nl_url=u;this._nl_headers={};return origOpen.apply(this,arguments);};
+var origSetHeader=XMLHttpRequest.prototype.setRequestHeader;
+XMLHttpRequest.prototype.setRequestHeader=function(k,v){if(this._nl_headers)this._nl_headers[k]=v;return origSetHeader.apply(this,arguments);};
 XMLHttpRequest.prototype.send=function(){
   var xhr=this;
   var rb = '';
@@ -66,14 +80,16 @@ XMLHttpRequest.prototype.send=function(){
     }
   } catch(e) { rb = '[xhr_parse_error]'; }
   var bodyContent = rb.substring(0,REQ_MAX);
+  var reqHeaders = xhr._nl_headers || {};
   xhr.addEventListener('load',function(){
     var u=xhr._nl_url||'';
     if(skip(u)) return;
     var body=xhr.responseText||'';
     push({
       url:u, method:(xhr._nl_method||'GET').toUpperCase(), status:xhr.status, type:'xhr', 
+      headers: reqHeaders, // 捕获请求头
       body:body.substring(0,BODY_MAX), bodyTruncated:body.length>BODY_MAX,
-      reqBody:bodyContent, requestBody:bodyContent, // 双写字段
+      reqBody:bodyContent, requestBody:bodyContent,
       ts:Date.now()
     });
   });

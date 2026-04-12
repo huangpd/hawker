@@ -203,9 +203,22 @@ def configure_logging(
 def emit_observation(message: str) -> None:
     """
     专业的观测摘要发送器。
-    
     1. 直接通过 sys.stdout 输出（被执行器拦截后成为大模型的 Observation）。
-    2. 这种方式不带 logging 前缀（时间、TraceID），保持 Observation 纯净。
+    2. 这种方式不带 logging 前缀，保持 Observation 纯净。
     """
     sys.stdout.write(message + "\n")
     sys.stdout.flush()
+
+
+def emit_tool_observation(tool_name: str, status: str, metrics: str = "", summary: str = "") -> None:
+    """
+    标准化工具观测摘要。
+    格式: [{tool_name}] {status} | {metrics} | {summary}
+    """
+    parts = [f"[{tool_name}] {status}"]
+    if metrics:
+        parts.append(metrics)
+    if summary:
+        parts.append(summary)
+    
+    emit_observation(" | ".join(parts))

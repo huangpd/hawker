@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 from hawker_agent.agent.executor import execute
-from hawker_agent.agent.namespace import HawkerNamespace, build_system_dict
+from hawker_agent.agent.namespace import HawkerNamespace, build_namespace
 from hawker_agent.agent.parser import parse_response
 from hawker_agent.agent.prompts import build_system_prompt
 from hawker_agent.browser.session import BrowserSession
@@ -89,7 +89,7 @@ def _build_result(
     total_duration = time.time() - state.started_at
     final_answer = state.answer
 
-    # 结果恢复逻辑（迁移自 _recover_partial_result）
+    # 结果恢复逻辑（当任务非正常结束时生成总结）
     if stop_reason != "done" and not final_answer:
         parts = [f"停止原因: {stop_reason}。执行了 {total_steps} 步。"]
         if state.items:
@@ -99,17 +99,31 @@ def _build_result(
             parts.insert(0, "[任务未完成]")
             parts.append("未采集到有效数据。")
 
+        # 扫描内存中的半成品数据 (迁移自 main.py 逻辑)
         if namespace:
-            llm_vars = namespace.get_llm_view()
+            skip_names = {
+                "json", "asyncio", "csv", "re", "datetime", "Path", "requests", "httpx",
+                "all_items", "nav", "dom_state", "nav_search", "js", "click",
+                "click_index", "fill_input", "http_request", "get_network_log",
+                "http_json", "parse_http_response", "clean_items", "ensure",
+                "append_items", "save_checkpoint", "final_answer",
+                "async_nav", "async_dom_state", "async_nav_search", "async_js",
+                "async_click", "async_click_index", "async_fill_input", "async_get_network_log",
+                "browser_download", "download_file", "run_dir", "get_cookies", "get_selector_from_index"
+            }
             data_vars = []
-            for name, val in sorted(llm_vars.items()):
+            # 扫描持久化层 (session)
+            for name, val in sorted(namespace.session.items()):
+                if name.startswith("_") or name in skip_names or callable(val):
+                    continue
                 if isinstance(val, (list, dict)) and val:
                     data_vars.append(f"  - {name}: {type(val).__name__}, {len(val)} 项")
 
             if data_vars:
                 parts.append("\nnamespace 中可能包含部分数据的变量:")
                 parts.extend(data_vars)
-                
+
+        # 因为 items 字段已经包含了完整数据。保持 answer 作为纯语义总结。
         final_answer = " ".join(parts[:3]) + ("\n" + "\n".join(parts[3:]) if len(parts) > 3 else "")
 
     # 执行持久化
@@ -185,8 +199,8 @@ async def run(
         register_browser_tools(reg, br, history)
         register_http_tools(reg)
 
-        # 构建分层代码执行命名空间
-        system_dict = build_system_dict(state, reg.as_namespace_dict(), str(run_dir))
+        # 构建代码执行命名空间
+        system_dict = build_namespace(state, reg.as_namespace_dict(), str(run_dir))
         namespace = HawkerNamespace(system_dict, str(run_dir))
 
         for step in range(1, max_steps + 1):

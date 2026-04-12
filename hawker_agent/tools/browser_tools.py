@@ -57,13 +57,28 @@ def register_browser_tools(
         """通过 DOM 索引 [i_*] 向输入框填写文本（模拟逐字输入，兼容 React/Vue）。"""
         return await actions.fill_input(session, index, text)
 
-    async def browser_download(url: str) -> str:
-        """通过浏览器会话下载文件。文件将自动归档到任务目录。"""
-        return await actions.browser_download(session, url)
+    async def browser_download(url: str, filename: str | None = None, **kwargs: object) -> str:
+        """利用浏览器会话下载文件（自动继承 Cookie/登录态，推荐用于 PDF/图片下载）。"""
+        from hawker_agent.tools import http_tools
+        # 1. 提取 Cookie
+        cookies = await actions.get_cookies(session)
+        # 2. 调用通用下载引擎（自动注入 run_dir 已在 namespace 层处理，此处透传 kwargs）
+        return await http_tools.download_file(url, filename, cookies=cookies, **kwargs)  # type: ignore
 
-    async def get_network_log(filter: str = "", only_new: bool = False) -> list:
-        """读取页面拦截到的 Fetch/XHR 网络请求日志。返回解析后的列表。"""
+    async def get_network_log(filter: str = "", only_new: bool = False) -> str:
+        """读取页面拦截到的 Fetch/XHR 网络请求日志。返回 JSON 字符串。"""
         return await actions.get_network_log(session, filter, only_new)
+
+    async def get_cookies() -> list[dict]:
+        """
+        获取当前浏览器会话的所有 Cookie。
+        适用于：当你需要使用 http_json() 或 http_request() 发送请求，且需要继承浏览器的登录状态时。
+        用法示例:
+            cookies = await get_cookies()
+            cookie_dict = {c['name']: c['value'] for c in cookies}
+            res = await http_json(url, cookies=cookie_dict)
+        """
+        return await actions.get_cookies(session)
 
     async def get_selector_from_index(index: int) -> dict:
         """
@@ -91,7 +106,7 @@ def register_browser_tools(
     tools_to_register = [
         nav, dom_state, nav_search, js, click, click_index, 
         fill_input, browser_download, get_network_log,
-        get_selector_from_index
+        get_selector_from_index, get_cookies
     ]
     for fn in tools_to_register:
         registry.register(fn)

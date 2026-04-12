@@ -46,13 +46,6 @@ class HawkerNamespace:
         self.session: dict[str, Any] = {"run_dir": run_dir}
         self.cell_local: dict[str, Any] = {}
         
-        # 预定义不应持久化的临时变量黑名单
-        self._temp_var_names = {
-            "i", "j", "k", "n", "x", "y", "el", "item", "node",
-            "tmp", "temp", "row", "line", "result", "resp", "response",
-            "data", "raw", "buf", "content", "m", "match"
-        }
-
     @property
     def exec_view(self) -> ChainMap:
         """返回合并视图供 exec() 使用，优先级: Local > Session > System"""
@@ -75,22 +68,18 @@ class HawkerNamespace:
         self.cell_local.clear()
 
     def _should_persist(self, name: str, value: Any) -> bool:
-        """判定变量是否值得持久化"""
-        # 1. 排除系统保留 key
-        if name in self.system:
-            return False
-        # 2. 排除下划线开头的私有变量
-        if name.startswith("_"):
-            return False
-        # 3. 排除已知的临时变量名
-        if name.lower() in self._temp_var_names:
-            return False
-        # 4. 排除过短的变量名 (通常是循环索引)
-        if len(name) <= 1:
-            return False
-        # 5. 排除模块、函数、类等不可序列化的结构 (可选，LLM 定义的函数建议保留)
-        if inspect.ismodule(value):
-            return False
+        """
+        基于协议的持久化判定
+        规则：
+        1. 系统保留字 -> 不持久化
+        2. 下划线开头 (如 _tmp) -> 显式声明的临时变量，不持久化
+        3. 单字符名 (如 i, j, x) -> 典型的循环/临时变量，不持久化
+        4. 其余变量 -> 全部持久化
+        """
+        if name in self.system: return False
+        if name.startswith("_"): return False
+        if len(name) <= 1: return False
+        if inspect.ismodule(value): return False
             
         return True
 
@@ -123,7 +112,26 @@ def _bind_callable_to_state(state: CodeAgentState, fn: Callable) -> Callable:
     return wrapped
 
 
-def build_system_dict(
+class ClearableList(list):
+    """包装原始列表，拦截 .clear() 以同步重置 ItemStore。"""
+
+    def __init__(self, data: list, store: object):
+        super().__init__(data)
+        self._data = data
+        self._store = store
+
+    def clear(self) -> None:
+        self._data.clear()
+        if hasattr(self._store, "clear"):
+            self._store.clear()  # type: ignore
+
+    def __getitem__(self, i): return self._data[i]
+    def __iter__(self): return iter(self._data)
+    def __len__(self): return len(self._data)
+    def __repr__(self): return repr(self._data)
+
+
+def build_namespace(
     state: CodeAgentState,
     tools_dict: dict[str, Callable],
     run_dir: str,
@@ -131,9 +139,27 @@ def build_system_dict(
     """构建只读的系统工具字典"""
     sys_dict: dict = {}
 
-    # 注入外部工具
+    # 注入外部工具（浏览器工具、HTTP 工具等）
     for name, fn in tools_dict.items():
-        sys_dict[name] = _bind_callable_to_state(state, fn)
+        if name in ("browser_download", "download_file"):
+            # 为这些涉及文件写入的工具自动注入 run_dir 参数
+            # 注意：必须使用默认参数绑定 fn_to_call，否则闭包会捕获循环变量的最终值
+            if inspect.iscoroutinefunction(inspect.unwrap(fn)):
+                @functools.wraps(fn)
+                async def wrapped_with_rundir(*args: object, fn_to_call=fn, **kwargs: object) -> object:
+                    if "run_dir" not in kwargs:
+                        kwargs["run_dir"] = run_dir
+                    return await fn_to_call(*args, **kwargs)
+                sys_dict[name] = _bind_callable_to_state(state, wrapped_with_rundir)
+            else:
+                @functools.wraps(fn)
+                def wrapped_with_rundir_sync(*args: object, fn_to_call=fn, **kwargs: object) -> object:
+                    if "run_dir" not in kwargs:
+                        kwargs["run_dir"] = run_dir
+                    return fn_to_call(*args, **kwargs)
+                sys_dict[name] = _bind_callable_to_state(state, wrapped_with_rundir_sync)
+        else:
+            sys_dict[name] = _bind_callable_to_state(state, fn)
 
     # 注入核心动作
     sys_dict["append_items"] = _bind_callable_to_state(state, _make_append_items(state))
@@ -145,9 +171,11 @@ def build_system_dict(
     sys_dict["ensure"] = ensure
     sys_dict["parse_http_response"] = parse_http_response
     sys_dict["summarize_json"] = summarize_json
+    sys_dict["normalize_items"] = normalize_items
     
-    # 共享数据引用
-    sys_dict["all_items"] = state.items.get_raw_list()
+    # 共享数据引用 (使用 ClearableList 包装，拦截 .clear() 以同步重置去重集合)
+    # 提醒：Agent 绝对不能通过 all_items = [] 来覆盖它
+    sys_dict["all_items"] = ClearableList(state.items.get_raw_list(), state.items)
 
     # 标准库
     sys_dict["asyncio"] = asyncio

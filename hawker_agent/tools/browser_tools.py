@@ -65,10 +65,33 @@ def register_browser_tools(
         """读取页面拦截到的 Fetch/XHR 网络请求日志。返回解析后的列表。"""
         return await actions.get_network_log(session, filter, only_new)
 
+    async def get_selector_from_index(index: int) -> dict:
+        """
+        通过 DOM 索引 [i_*] 获取该元素的严谨 CSS 选择器及访问路径。
+        返回: {"selector": str, "shadow_path": list, "js_snippet": str}
+        用法示例:
+            info = await get_selector_from_index(45)
+            # 在循环或 js() 中使用 info['js_snippet'] 确保定位稳定性
+            # 例如: data = await js(f"return {info['js_snippet']}.innerText")
+        适用于: 1. 循环点击翻页按钮; 2. 需要精准穿透 Shadow DOM; 3. 复杂的 JS 提取逻辑。
+        """
+        from hawker_agent.browser.dom_utils import get_selector_from_index as _get_selector
+        res = await _get_selector(session.raw, index)
+        
+        # 额外生成一个方便 LLM 直接 copy-paste 的 JS 访问表达式
+        js_snippet = "document"
+        for host in res["shadow_path"]:
+            js_snippet += f'.querySelector("{host}").shadowRoot'
+        js_snippet += f'.querySelector("{res["selector"]}")'
+        
+        res["js_snippet"] = js_snippet
+        return res
+
     # 注册所有工具
     tools_to_register = [
         nav, dom_state, nav_search, js, click, click_index, 
-        fill_input, browser_download, get_network_log
+        fill_input, browser_download, get_network_log,
+        get_selector_from_index
     ]
     for fn in tools_to_register:
         registry.register(fn)

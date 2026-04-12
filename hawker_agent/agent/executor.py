@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import contextlib
+import copy
+import inspect
 import io
 import logging
 import traceback
@@ -11,127 +14,102 @@ from hawker_agent.agent.compressor import truncate_output
 
 if TYPE_CHECKING:
     from hawker_agent.models.state import CodeAgentState
+    from hawker_agent.agent.namespace import HawkerNamespace
 
 logger = logging.getLogger(__name__)
-
-
-def _has_async_constructs(tree: ast.AST) -> bool:
-    """检测 AST 树中是否包含异步关键字。"""
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Await, ast.AsyncWith, ast.AsyncFor)):
-            return True
-    return False
-
-
-def _get_assigned_names(tree: ast.AST) -> set[str]:
-    """收集代码中所有被赋值的变量名。"""
-    names = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    names.add(target.id)
-        elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
-            names.add(node.target.id)
-        elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)):
-            target = getattr(node, "target", None)
-            if isinstance(target, ast.Name):
-                names.add(target.id)
-        elif isinstance(node, ast.Global):
-            names.update(node.names)
-    return names
 
 
 def _clean_traceback(tb_str: str) -> str:
     """清理 Traceback，移除执行器内部的干扰行。"""
     lines = tb_str.split("\n")
     cleaned = []
-    skip_next = False
+    # 关注点是从 <hawker-cell> 开始的报错
+    found_cell = False
     for line in lines:
-        if "exec(compile(" in line or "exec(code" in line or "__code_exec__" in line:
-            skip_next = True
-            continue
-        if skip_next and line.startswith("    ") and not line.strip().startswith("File"):
-            skip_next = False
-            continue
-        skip_next = False
-        cleaned.append(line)
-    return "\n".join(cleaned)
+        if '<hawker-cell>' in line:
+            found_cell = True
+        if found_cell:
+            cleaned.append(line)
+    
+    if not cleaned:
+        return tb_str
+    return "Traceback (most recent call last):\n" + "\n".join(cleaned)
 
 
 async def execute(
     code: str,
-    namespace: dict,
+    namespace: HawkerNamespace,
     state: CodeAgentState | None = None,
     step: int | None = None,
 ) -> str:
     """
-    在隔离的 namespace 中执行 LLM 生成的代码。
-    支持自动识别并运行顶层 await。
+    使用 Native Top-level Await 执行代码。
+    具备事务语义：成功则 commit 变量提升，失败则 rollback 回滚快照。
     """
     log_scope = state.bind_log_context(step) if state is not None else contextlib.nullcontext()
     
     with log_scope:
         buf = io.StringIO()
         logger.info("代码执行开始: chars=%d", len(code))
-        logger.debug("--- 执行代码 ---\n%s\n---------------", code)
-        
-        try:
-            # 1. 解析 AST
-            try:
-                tree = ast.parse(code, mode="exec")
-            except SyntaxError:
-                # 语法错误直接抛出，走下方的统一错误处理
-                raise
 
-            # 2. 判断是否需要异步包装
-            if _has_async_constructs(tree):
-                # 收集所有被赋值的变量名
-                assigned_names = _get_assigned_names(tree)
-                # 与 namespace 中已有的变量取交集，注入 global 声明，确保能读写外部变量
-                existing_vars = {n for n in assigned_names if n in namespace}
-                global_decl = f"    global {', '.join(sorted(existing_vars))}\n" if existing_vars else ""
+        # 事务快照：session 层深拷贝
+        # 50年架构师提示：只有深拷贝才能确保嵌套数据结构被回滚
+        try:
+            session_snapshot = copy.deepcopy(namespace.session)
+        except Exception as e:
+            logger.debug("Namespace 快照失败 (可能包含不可 pickle 的对象): %s", e)
+            session_snapshot = namespace.session.copy() # 降级为浅拷贝
+
+        try:
+            # 1. 编译：允许顶层 await (Python 3.8+)
+            compiled = compile(
+                code, 
+                "<hawker-cell>", 
+                "exec", 
+                flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
+            )
+
+            # 2. 执行：在统一视图中运行
+            with contextlib.redirect_stdout(buf):
+                # 合并为一个真正的 dict，因为 exec 不接受 ChainMap
+                # 我们将这个 dict 同时作为 globals 和 locals 以模拟顶层执行环境
+                view = dict(namespace.exec_view)
                 
-                # 缩进原始代码并包装进异步函数
-                indented_code = "\n".join(
-                    "    " + line if line.strip() else line for line in code.split("\n")
-                )
-                # 核心逻辑：异步函数返回 locals()，以便我们抓取新定义的变量
-                wrapped_code = (
-                    f"async def __code_exec__():\n"
-                    f"{global_decl}"
-                    f"{indented_code}\n"
-                    f"    return locals()\n"
-                )
+                # 核心：在 ALLOW_TOP_LEVEL_AWAIT 模式下，如果代码含 await，
+                # 使用 eval() 执行编译后的代码块可以正确返回协程对象。
+                # 50年架构师提示：eval 支持执行以 'exec' 模式编译的代码对象。
+                maybe_coro = eval(compiled, view)
                 
-                with contextlib.redirect_stdout(buf):
-                    # 在 namespace 中定义这个协程函数
-                    exec(compile(wrapped_code, "<code>", "exec"), namespace, namespace)
-                    coro_func = namespace.pop("__code_exec__", None)
-                    if coro_func:
-                        # 运行协程并获取其局部变量字典
-                        result_locals = await coro_func()
-                        if result_locals:
-                            # 将新定义的局部变量同步回全局 namespace
-                            for k, v in result_locals.items():
-                                if not k.startswith("_"):
-                                    namespace[k] = v
-            else:
-                # 纯同步代码，直接在 namespace 中执行
-                with contextlib.redirect_stdout(buf):
-                    exec(code, namespace, namespace)
+                if inspect.isawaitable(maybe_coro):
+                    await maybe_coro
+                
+                # 3. 同步回 cell_local
+                for k, v in view.items():
+                    if k not in namespace.system:
+                        namespace.cell_local[k] = v
+
+
+            # 4. 提交事务：变量提升
+            namespace.commit()
+            
+            output = truncate_output(buf.getvalue().strip() or "[无输出]")
+            logger.info("代码执行成功")
+            return output
 
         except Exception:
+            # 5. 回滚事务：彻底恢复 session 并清空 local
+            namespace.session = session_snapshot
+            namespace.rollback()
+            
             tb = _clean_traceback(traceback.format_exc(limit=8).strip())
-            # 错误诊断增强 (Hints)
+            
+            # 错误诊断增强
             hints = []
             if "SyntaxError" in tb:
                 if '"""' in code or "'''" in code:
                     hints.append("提示: 检查三引号字符串内的引号转义")
-                if "{" in code and "}" in code and "f'" in code:
-                    hints.append("提示: f-string 内的大括号需要用 {{ }} 转义")
             if "NameError" in tb:
-                hints.append("提示: 变量可能在之前的步骤中未被赋值或已被覆盖")
+                hints.append("提示: 变量可能未定义或在本步骤回滚中被清除")
             
             error_msg = buf.getvalue().strip()
             if error_msg:
@@ -141,11 +119,5 @@ async def execute(
                 error_msg += "\n" + "\n".join(hints)
             
             final_output = truncate_output(error_msg)
-            logger.info("代码执行结束: success=false output_chars=%d", len(final_output))
+            logger.warning("代码执行失败，已回滚 Namespace 状态")
             return final_output
-
-        # 执行成功，返回捕获的 stdout
-        output = truncate_output(buf.getvalue().strip() or "[无输出]")
-        logger.info("代码执行结束: success=true output_chars=%d", len(output))
-        logger.debug("--- 执行输出 ---\n%s\n---------------", output)
-        return output

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 from hawker_agent.agent.executor import execute
-from hawker_agent.agent.namespace import build_namespace
+from hawker_agent.agent.namespace import HawkerNamespace, build_system_dict
 from hawker_agent.agent.parser import parse_response
 from hawker_agent.agent.prompts import build_system_prompt
 from hawker_agent.browser.session import BrowserSession
@@ -83,7 +83,7 @@ def _build_result(
     total_steps: int,
     log_path: Path,
     task: str,
-    namespace: dict[str, object] | None = None,
+    namespace: HawkerNamespace | None = None,
 ) -> CodeAgentResult:
     """构建最终结果对象并执行持久化。"""
     total_duration = time.time() - state.started_at
@@ -100,21 +100,9 @@ def _build_result(
             parts.append("未采集到有效数据。")
 
         if namespace:
-            skip_names = {
-                "json", "asyncio", "csv", "re", "datetime", "Path", "requests", "httpx",
-                "all_items", "nav", "dom_state", "nav_search", "js", "click",
-                "click_index", "fill_input", "http_request", "get_network_log",
-                "http_json", "parse_http_response", "clean_items", "ensure",
-                "append_items", "save_checkpoint", "final_answer",
-                "async_nav", "async_dom_state", "async_nav_search", "async_js",
-                "async_click", "async_click_index", "async_fill_input", "async_get_network_log",
-                "browser_download", "download_file", "run_dir"
-            }
+            llm_vars = namespace.get_llm_view()
             data_vars = []
-            for name in sorted(namespace.keys()):
-                if name.startswith("_") or name in skip_names or callable(namespace[name]):
-                    continue
-                val = namespace[name]
+            for name, val in sorted(llm_vars.items()):
                 if isinstance(val, (list, dict)) and val:
                     data_vars.append(f"  - {name}: {type(val).__name__}, {len(val)} 项")
 
@@ -197,8 +185,9 @@ async def run(
         register_browser_tools(reg, br, history)
         register_http_tools(reg)
 
-        # 构建代码执行命名空间
-        namespace = build_namespace(state, reg.as_namespace_dict(), str(run_dir))
+        # 构建分层代码执行命名空间
+        system_dict = build_system_dict(state, reg.as_namespace_dict(), str(run_dir))
+        namespace = HawkerNamespace(system_dict, str(run_dir))
 
         for step in range(1, max_steps + 1):
             with state.bind_log_context(step):
@@ -274,11 +263,23 @@ async def run(
 
                 # 8. 更新对话历史
                 history.add_assistant(llm_response.text)
+                
+                # 获取持久化变量摘要
+                session_vars = namespace.get_llm_view()
+                var_summary = []
+                for k, v in sorted(session_vars.items()):
+                    if k == "run_dir": continue
+                    v_str = str(len(v)) + " 项" if isinstance(v, (list, dict)) else str(v)[:30]
+                    var_summary.append(f"{k}: {v_str}")
+                
+                var_line = f" | 变量: {', '.join(var_summary)}" if var_summary else ""
+                
                 # 注入当前状态摘要和执行输出
                 status_line = (
                     f"[状态] 已采集: {len(state.items)}条"
                     f" | 步骤: {step}/{max_steps}"
                     f" | token: {state.token_stats.total_tokens:,}/{cfg.max_total_tokens:,}"
+                    f"{var_line}"
                 )
                 # observation 进历史前强制截断至 1500 字符，防止长列表拖垮上下文
                 from hawker_agent.agent.compressor import truncate_output

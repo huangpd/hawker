@@ -31,6 +31,9 @@ URL: https://example.com
 ...
 ```
 - `[i_123]` 标记表示**可交互元素**，用 `await click_index(123)` 精确点击。
+- **定位稳定性协议 (Anchor Protocol)**：
+  - **初次尝试**：优先使用 `click_index()` 或 `fill_input()`。
+  - **持久化定位**：若要在 `while` 循环中操作同一个元素（如“下一页”按钮），或在 `js()` 脚本中深度提取，请先调用 `await get_selector_from_index(index)` 获取该元素的 `js_snippet` 路径。这能避免因页面局部刷新导致索引 `[i_*]` 失效。
 - **交互稳定性**：在同一步骤内执行多个连续操作时，**必须在操作之间加入 `await asyncio.sleep(0.5)`**。
 - DOM 超过 15000 字符会截断，用 `await js()` 探索更多。
 

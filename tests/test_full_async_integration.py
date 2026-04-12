@@ -3,7 +3,7 @@ import pytest
 import json
 from pathlib import Path
 from hawker_agent.agent.executor import execute
-from hawker_agent.agent.namespace import build_namespace
+from hawker_agent.agent.namespace import HawkerNamespace, build_system_dict
 from hawker_agent.models.state import CodeAgentState
 from hawker_agent.tools.registry import ToolRegistry
 
@@ -27,39 +27,45 @@ async def test_full_async_tools_execution(tmp_path):
     registry.register(mock_nav, name="nav")
     registry.register(mock_download, name="browser_download")
     
-    # 构建命名空间 (此时 append_items 等已是异步)
-    ns = build_namespace(state, registry.as_namespace_dict(), str(run_dir))
+    # 构建分层命名空间
+    sys_dict = build_system_dict(state, registry.as_namespace_dict(), str(run_dir))
+    ns = HawkerNamespace(sys_dict, str(run_dir))
     
     # 场景：Agent 执行一段全异步代码
     code = """
 # 1. 异步导航
-res = await nav("https://example.com")
+res_visited = await nav("https://example.com")
 # 2. 异步提交数据
-items = [{"id": 1, "val": "a"}, {"id": 2, "val": "b"}]
-await append_items(items)
+my_items = [{"id": 1, "val": "a"}, {"id": 2, "val": "b"}]
+i = 0 # 临时循环索引
+await append_items(my_items)
 # 3. 异步保存检查点
 await save_checkpoint("test.json")
 # 4. 异步下载
 await browser_download("https://file.pdf")
 # 5. 定义变量并结束
-msg = f"Got {len(all_items)} items"
-await final_answer(msg)
+final_msg = f"Got {len(all_items)} items"
+await final_answer(final_msg)
 """
     
     output = await execute(code, ns, state=state)
     
-    # 验证数据是否提交成功 (说明 append_items 成功)
+    # 验证数据是否提交成功
     assert len(state.items) == 2
-    # 验证 final_answer 是否被触发 (说明执行到了最后一行且变量持久化成功)
+    # 验证 final_answer 是否被触发
     assert state.final_answer_requested == "Got 2 items"
     
-    # 验证检查点文件是否生成 (说明 save_checkpoint 成功)
+    # 验证检查点文件是否生成
     checkpoint_file = run_dir / "test.json"
     assert checkpoint_file.exists()
     
-    # 验证 namespace 变量持久化
-    assert ns["res"] == "Visited https://example.com"
-    assert ns["msg"] == "Got 2 items"
+    # 验证 namespace 变量持久化 (符合协议的变量提升到 session)
+    assert ns.session["res_visited"] == "Visited https://example.com"
+    assert ns.session["final_msg"] == "Got 2 items"
+    assert ns.session["my_items"] == [{"id": 1, "val": "a"}, {"id": 2, "val": "b"}]
+    
+    # 不符合协议的临时变量 (i) 应该在 session 中找不到
+    assert "i" not in ns.session
 
 @pytest.mark.asyncio
 async def test_async_exception_handling():
@@ -71,7 +77,8 @@ async def test_async_exception_handling():
         raise ValueError("Tool Failed")
     
     registry.register(broken_tool, name="break_it")
-    ns = build_namespace(state, registry.as_namespace_dict(), "tmp")
+    sys_dict = build_system_dict(state, registry.as_namespace_dict(), "tmp")
+    ns = HawkerNamespace(sys_dict, "tmp")
     
     code = "await break_it()"
     output = await execute(code, ns)

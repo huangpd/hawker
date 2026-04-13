@@ -89,12 +89,24 @@ class HawkerNamespace:
 
 
 def _bind_callable_to_state(state: CodeAgentState, fn: Callable) -> Callable:
-    """为工具函数注入日志上下文。"""
+    """为工具函数注入日志上下文，并记录工具调用的完整轨迹 (Trajectory)。"""
     if inspect.iscoroutinefunction(fn):
         @functools.wraps(fn)
         async def async_wrapped(*args: object, **kwargs: object) -> object:
             with state.bind_log_context():
-                result = await fn(*args, **kwargs)
+                logger.info("==> [Trajectory Tool Call] %s(args=%s, kwargs=%s)", fn.__name__, args, kwargs)
+                try:
+                    result = await fn(*args, **kwargs)
+                except Exception as e:
+                    logger.error("<== [Trajectory Tool Error] %s: %s", fn.__name__, e)
+                    raise
+                
+                # 限制输出日志长度，防止刷屏
+                res_str = str(result)
+                if len(res_str) > 300:
+                    res_str = res_str[:300] + " ... (truncated)"
+                logger.info("<== [Trajectory Tool Return] %s -> %s", fn.__name__, res_str)
+                
                 if hasattr(result, "dom") and hasattr(result, "summary"):
                     state.pending_dom = getattr(result, "dom")
                     return getattr(result, "summary")
@@ -104,7 +116,18 @@ def _bind_callable_to_state(state: CodeAgentState, fn: Callable) -> Callable:
     @functools.wraps(fn)
     def wrapped(*args: object, **kwargs: object) -> object:
         with state.bind_log_context():
-            result = fn(*args, **kwargs)
+            logger.info("==> [Trajectory Tool Call] %s(args=%s, kwargs=%s)", fn.__name__, args, kwargs)
+            try:
+                result = fn(*args, **kwargs)
+            except Exception as e:
+                logger.error("<== [Trajectory Tool Error] %s: %s", fn.__name__, e)
+                raise
+            
+            res_str = str(result)
+            if len(res_str) > 300:
+                res_str = res_str[:300] + " ... (truncated)"
+            logger.info("<== [Trajectory Tool Return] %s -> %s", fn.__name__, res_str)
+            
             if hasattr(result, "dom") and hasattr(result, "summary"):
                 state.pending_dom = getattr(result, "dom")
                 return getattr(result, "summary")

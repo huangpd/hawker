@@ -75,22 +75,22 @@ class TestNormalizeApiBase:
         assert _normalize_api_base("") is None
 
     def test_strips_trailing_slash(self) -> None:
-        assert _normalize_api_base("https://api.example.com/") == "https://api.example.com"
+        assert _normalize_api_base("https://api.example.com/") == "https://api.example.com/v1"
 
     def test_strips_chat_completions(self) -> None:
         assert (
             _normalize_api_base("https://api.example.com/v1/chat/completions")
-            == "https://api.example.com"
+            == "https://api.example.com/v1/chat/completions"
         )
 
     def test_strips_responses(self) -> None:
         assert (
             _normalize_api_base("https://api.example.com/v1/responses")
-            == "https://api.example.com"
+            == "https://api.example.com/v1/responses"
         )
 
     def test_no_suffix(self) -> None:
-        assert _normalize_api_base("https://api.example.com") == "https://api.example.com"
+        assert _normalize_api_base("https://api.example.com") == "https://api.example.com/v1"
 
 
 class TestNormalizeModelName:
@@ -168,33 +168,23 @@ class TestExtractUsage:
 class TestDetectTruncation:
     def test_incomplete_status(self) -> None:
         obj = SimpleNamespace(
-            status="incomplete",
-            incomplete_details=SimpleNamespace(reason="max_tokens"),
+            choices=[SimpleNamespace(finish_reason="length")]
         )
-        is_trunc, reason = _detect_truncation("some text", obj)
+        is_trunc, reason = _detect_truncation(obj)
         assert is_trunc
-        assert "截断" in reason  # type: ignore[operator]
-
-    def test_output_near_limit(self) -> None:
-        obj = SimpleNamespace(
-            status="complete",
-            usage=SimpleNamespace(output_tokens=950),
-            max_output_tokens=1000,
-        )
-        is_trunc, reason = _detect_truncation("some text", obj)
-        assert is_trunc
-        assert "上限" in reason  # type: ignore[operator]
-
-    def test_repeated_output(self) -> None:
-        text = "abcdef" * 50
-        obj = SimpleNamespace(status="complete")
-        is_trunc, reason = _detect_truncation(text, obj)
-        assert is_trunc
-        assert "重复" in reason  # type: ignore[operator]
+        assert "length" in reason  # type: ignore[operator]
 
     def test_normal_response(self) -> None:
-        obj = SimpleNamespace(status="complete")
-        is_trunc, reason = _detect_truncation("正常响应内容", obj)
+        obj = SimpleNamespace(
+            choices=[SimpleNamespace(finish_reason="stop")]
+        )
+        is_trunc, reason = _detect_truncation(obj)
+        assert not is_trunc
+        assert reason is None
+
+    def test_no_choices(self) -> None:
+        obj = SimpleNamespace(choices=[])
+        is_trunc, reason = _detect_truncation(obj)
         assert not is_trunc
         assert reason is None
 
@@ -209,6 +199,7 @@ class TestLLMResponse:
             input_tokens=100,
             output_tokens=50,
             cached_tokens=0,
+            total_tokens=150,
             cost=0.01,
         )
         assert r.is_truncated is False

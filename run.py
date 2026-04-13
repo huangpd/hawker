@@ -94,6 +94,15 @@ TASK="""
 步骤2: 点击"下一页"，获取3页数据
 步骤3: 获取列表页URL和title 
 """
+TASK="""
+1.打开 https://github.com/trending
+2.获取当前页面的项目URL、start、fork、today_start
+提取字段: 
+- URL: 项目链接 
+- start: start数 
+- fork： fork数
+- today_start: today_start数
+"""
 # =================================================================
 
 async def main():

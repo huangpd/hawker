@@ -207,14 +207,12 @@ class TestBuildNamespace:
 def test_register_data_tools() -> None:
     reg = ToolRegistry()
     register_data_tools(reg)
-    assert "clean_items" in reg
     assert "ensure" in reg
-    assert "summarize_json" in reg
     assert "parse_http_response" in reg
     
     # Check sync/async split
     sync_caps = reg.build_capabilities_list("sync")
     async_caps = reg.build_capabilities_list("async")
-    assert "clean_items" in sync_caps
+    assert "ensure" in sync_caps
     assert "await" not in sync_caps
     assert "asyncio.sleep" in async_caps

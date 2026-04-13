@@ -65,8 +65,8 @@ def register_browser_tools(
         # 2. 调用通用下载引擎（自动注入 run_dir 已在 namespace 层处理，此处透传 kwargs）
         return await http_tools.download_file(url, filename, cookies=cookies, **kwargs)  # type: ignore
 
-    async def get_network_log(filter: str = "", only_new: bool = False) -> str:
-        """读取页面拦截到的 Fetch/XHR 网络请求日志。返回 JSON 字符串。"""
+    async def get_network_log(filter: str = "", only_new: bool = False) -> list:
+        """读取页面拦截到的 Fetch/XHR 网络请求日志。返回 list """
         return await actions.get_network_log(session, filter, only_new)
 
     async def get_cookies() -> list[dict]:

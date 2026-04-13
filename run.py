@@ -56,11 +56,6 @@ TASK="""
 """
 
 TASK="""
-步骤1: 获取 https://huggingface.co/datasets/nvidia/Nemotron-ClimbMix 仓库信息
-步骤5：提取这个仓库所有的文件名和下载URL
-
-"""
-TASK="""
 1. 访问维基百科网站：https://en.wikipedia.org
 2. 分别搜索 OpenAI、APPLE 二家公司
 3. 打开维基百科的相关文章
@@ -94,6 +89,12 @@ TASK="""
 1. 打开 https://www.ahnews.com.cn/df/hss/pc/lay/node_525.html
 2. 点击"下一页"，获取5页数据
 3. 获取列表页URL和title
+"""
+
+TASK="""
+步骤1: 获取 https://huggingface.co/datasets/nvidia/Nemotron-ClimbMix 仓库信息
+步骤5：提取这个仓库所有的文件名和下载URL
+
 """
 # =================================================================
 

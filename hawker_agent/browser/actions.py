@@ -74,7 +74,7 @@ async def _get_dom_state(session: BrowserSession) -> str:
             for tab in state.tabs[:5]:
                 lines.append(f"  - {tab.target_id[-4:]}: {tab.title[:30]}")
 
-        # 3.2 压缩重复的空白
+        # 3 压缩重复的空白
         dom_repr = re.sub(r"\n[\t ]+", "\n", dom_repr)
         
         dom_parts = []

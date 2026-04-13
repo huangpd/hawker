@@ -141,15 +141,15 @@ def register_core_actions(
     
     fn_append = _make_append_items(state)
     fn_append.__doc__ = "保存数据。追加到 all_items（自动去重），这是保存数据的唯一方式。"
-    registry.register(fn_append, name="append_items")
+    registry.register(fn_append, name="append_items", category="数据保存")
     
     fn_checkpoint = _make_save_checkpoint(state, run_dir)
     fn_checkpoint.__doc__ = "将当前 all_items 进度保存到磁盘（防止任务意外中断丢失数据）。"
-    registry.register(fn_checkpoint, name="save_checkpoint")
+    registry.register(fn_checkpoint, name="save_checkpoint", category="数据保存")
     
     fn_final = _make_final_answer(state)
     fn_final.__doc__ = "提交最终答案并强制结束任务。必须在确认完成时单独调用一次。"
-    registry.register(fn_final, name="final_answer")
+    registry.register(fn_final, name="final_answer", category="数据保存")
 
 
 def build_namespace(

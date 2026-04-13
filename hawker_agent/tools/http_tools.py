@@ -210,6 +210,6 @@ async def download_file(
 
 def register_http_tools(registry: ToolRegistry) -> None:
     """注册 HTTP 工具到 registry。"""
-    registry.register(http_request)
-    registry.register(http_json)
-    registry.register(download_file)
+    registry.register(http_request, category="网络 & 数据")
+    registry.register(http_json, category="网络 & 数据")
+    registry.register(download_file, category="网络 & 数据")

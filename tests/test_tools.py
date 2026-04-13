@@ -110,7 +110,7 @@ class TestBuildSystemPrompt:
             async_capabilities="caps_a",
             sync_capabilities="caps_s",
         )
-        assert "Invocation Protocol" in result
+        assert "工具列表" in result
 
 
 # ─── namespace ──────────────────────────────────────────────────

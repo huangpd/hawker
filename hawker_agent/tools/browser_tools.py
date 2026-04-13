@@ -104,9 +104,17 @@ def register_browser_tools(
 
     # 注册所有工具
     tools_to_register = [
-        nav, dom_state, nav_search, js, click, click_index, 
-        fill_input, browser_download, get_network_log,
-        get_selector_from_index, get_cookies
+        (nav, "导航与页面"),
+        (dom_state, "导航与页面"),
+        (nav_search, "导航与页面"),
+        (js, "导航与页面"),
+        (click, "交互"),
+        (click_index, "交互"),
+        (fill_input, "交互"),
+        (browser_download, "网络 & 数据"),
+        (get_network_log, "网络 & 数据"),
+        (get_selector_from_index, "交互"),
+        (get_cookies, "网络 & 数据")
     ]
-    for fn in tools_to_register:
-        registry.register(fn)
+    for fn, category in tools_to_register:
+        registry.register(fn, category=category)

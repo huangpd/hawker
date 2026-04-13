@@ -19,14 +19,11 @@
 
 ---
 
-## 工具调用协议 (Invocation Protocol)
+## 工具列表（必须 await）
 
-本项目采用全异步架构，请根据分类正确调用：
-
-### 1. IO 与交互工具 (必须 await)
 {{ async_capabilities }}
 
-### 2. 数据处理辅助工具 (同步执行，严禁 await)
+**同步工具（禁止 await）**
 {{ sync_capabilities }}
 
 ---

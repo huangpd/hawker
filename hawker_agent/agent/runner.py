@@ -216,9 +216,9 @@ async def run(
             sync_capabilities=reg.build_capabilities_list("sync"),
             instructions=instructions
         )
-        print("\n" + "="*40 + " [DEBUG] SYSTEM PROMPT " + "="*40)
-        print(full_system_prompt)
-        print("="*100 + "\n")
+        # print("\n" + "="*40 + " [DEBUG] SYSTEM PROMPT " + "="*40)
+        # print(full_system_prompt)
+        # print("="*100 + "\n")
         
         history.system_prompt = full_system_prompt
 
@@ -250,14 +250,12 @@ async def run(
                     progress_before=progress_before,
                 )
 
-                logger.info("=== [Trajectory Step %d] Thought ===\n%s\n" + "="*40, step, model_output.thought)
+                logger.info("Thought: %s", model_output.thought[:150] + "..." if len(model_output.thought) > 150 else model_output.thought)
 
                 # 4. 执行代码
                 if model_output.has_code:
-                    logger.info("=== [Trajectory Step %d] Code ===\n%s\n" + "="*40, step, model_output.code)
                     observation = await execute(model_output.code, namespace, state=state, step=step)
                 else:
-                    logger.info("=== [Trajectory Step %d] No Code ===", step)
                     observation = "[错误] 未找到 ```python``` 代码块"
                 
                 # 处理侧道注入的 DOM 状态
@@ -268,12 +266,6 @@ async def run(
                 step_meta.output = observation
                 if "[执行错误]" in observation:
                     step_meta.error = observation
-                
-                # 记录 Observation 轨迹
-                obs_str = str(observation)
-                if len(obs_str) > 1500:
-                    obs_str = obs_str[:1500] + "\n... (truncated)"
-                logger.info("=== [Trajectory Step %d] Observation ===\n%s\n" + "="*40, step, obs_str)
                 
                 # 5. 处理 final_answer 申请
                 if state.final_answer_requested:
@@ -305,8 +297,6 @@ async def run(
                 cell = step_meta.to_cell(model_output, state.token_stats, len(state.items))
                 cells.append(cell)
                 log_step(log_path, step, step_meta.elapsed(), state.token_stats, model_output.thought, model_output.code, observation)
-                
-                logger.info("=== [Trajectory Step %d] Completed | 耗时: %.2fs | Total Tokens: %d ===\n", step, step_meta.elapsed(), state.token_stats.total_tokens)
 
                 # 8. 更新对话历史
                 history.add_assistant(llm_response.text)

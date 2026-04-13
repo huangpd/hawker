@@ -65,20 +65,6 @@ def _clean_traceback(tb_str: str) -> str:
     return "Traceback (most recent call last):\n" + "\n".join(cleaned)
 
 
-def _filter_stdout(raw_output: str) -> str:
-    """过滤掉可能意外进入 stdout 的日志信息，保持 Observation 的纯净。"""
-    lines = raw_output.splitlines()
-    cleaned = []
-    for line in lines:
-        # 如果一行看起来像日志 (包含常见日志级别或 Trajectory 标记)，则过滤掉
-        if "==> [Trajectory" in line or "<== [Trajectory" in line or "=== [Trajectory" in line:
-            continue
-        if " INFO " in line or " DEBUG " in line or " WARNING " in line or " ERROR " in line:
-            continue
-        cleaned.append(line)
-    return "\n".join(cleaned)
-
-
 async def execute(
     code: str,
     namespace: HawkerNamespace,
@@ -140,9 +126,7 @@ async def execute(
             # 4. 提交事务：变量提升
             namespace.commit()
             
-            raw_out = buf.getvalue().strip()
-            clean_out = _filter_stdout(raw_out)
-            output = truncate_output(clean_out or "[无输出]")
+            output = truncate_output(buf.getvalue().strip() or "[无输出]")
             logger.info("代码执行成功")
             return output
 
@@ -161,9 +145,7 @@ async def execute(
             if "NameError" in tb:
                 hints.append("提示: 变量可能未定义或在本步骤回滚中被清除")
             
-            raw_err_out = buf.getvalue().strip()
-            clean_err_out = _filter_stdout(raw_err_out)
-            error_msg = clean_err_out
+            error_msg = buf.getvalue().strip()
             if error_msg:
                 error_msg += "\n"
             error_msg += f"[执行错误]\n{tb}"

@@ -105,10 +105,14 @@ def _normalize_level(level: int | str) -> int:
     return logging.INFO
 
 
-def _build_formatter(with_color: bool = False) -> logging.Formatter:
+def _build_formatter(with_color: bool = False, for_rich: bool = False) -> logging.Formatter:
     """构建日志格式器。"""
+    if for_rich:
+        # RichHandler 已经处理了时间、级别和颜色，我们只需提供上下文信息
+        return logging.Formatter("[%(trace_id).8s] [%(step)s] %(message)s")
+    
     if with_color:
-        return logging.Formatter("\033[2m%(trace_id)s\033[0m [%(step)s] %(message)s")
+        return logging.Formatter("\033[2m%(trace_id).8s\033[0m [%(step)s] %(message)s")
     
     return logging.Formatter(
         fmt=(
@@ -168,7 +172,7 @@ def configure_logging(
                 show_path=False,
                 log_time_format="[%X]",
             )
-            console_handler.setFormatter(_build_formatter(with_color=True))
+            console_handler.setFormatter(_build_formatter(for_rich=True))
         else:
             console_handler = logging.StreamHandler(sys.stderr)
             console_handler.setFormatter(_build_formatter(with_color=False))

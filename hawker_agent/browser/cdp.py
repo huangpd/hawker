@@ -20,19 +20,48 @@ async def get_cdp(session: BrowserSession):
 
 async def run_js(session: BrowserSession, expression: str) -> str:
     """通过 CDP Runtime.evaluate 执行任意 JS，返回字符串结果。"""
+    clean_expr = expression.strip()
     cdp = await get_cdp(session)
-    result = await cdp.cdp_client.send.Runtime.evaluate(
-        params={"expression": expression, "returnByValue": True, "awaitPromise": True},
-        session_id=cdp.session_id,
-    )
+
+    async def _eval(expr: str) -> dict:
+        return await cdp.cdp_client.send.Runtime.evaluate(
+            params={
+                "expression": expr,
+                "returnByValue": True,
+                "awaitPromise": True,
+                "replMode": True,  # 允许重复声明 let/const，解决 Already declared 报错
+            },
+            session_id=cdp.session_id,
+        )
+
+    result = await _eval(clean_expr)
+
+    # 异常处理与启发式重试
     if "exceptionDetails" in result:
         detail = result["exceptionDetails"]
         text = detail.get("text", "")
         exc = detail.get("exception", {})
         desc = exc.get("description", "") if isinstance(exc, dict) else ""
-        msg = f"[JS错误] {text} {desc}"
-        logger.debug("JS 执行异常: %s", msg)
-        return msg
+        
+        # 如果大模型习惯性地写了顶级 return (Illegal return statement)
+        if "Illegal return statement" in text or "Illegal return statement" in desc:
+            logger.debug("检测到非法的顶级 return，自动包裹异步 IIFE 进行重试")
+            # 既然有 return，包进函数里就一定能拿到正确的返回值
+            wrapped_expr = f"(async () => {{\n{clean_expr}\n}})()"
+            result = await _eval(wrapped_expr)
+            
+            if "exceptionDetails" in result:
+                detail = result["exceptionDetails"]
+                text = detail.get("text", "")
+                exc = detail.get("exception", {})
+                desc = exc.get("description", "") if isinstance(exc, dict) else ""
+                msg = f"[JS错误] {text} {desc}"
+                logger.debug("JS 自动包裹后执行异常: %s", msg)
+                return msg
+        else:
+            msg = f"[JS错误] {text} {desc}"
+            logger.debug("JS 执行异常: %s", msg)
+            return msg
 
     value = result.get("result", {}).get("value")
     if value is None:

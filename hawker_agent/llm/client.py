@@ -126,6 +126,7 @@ class LLMClient:
             "base_url": api_base,
             "timeout": 180,
             "temperature": temperature,
+            "max_tokens": 1500,  # 强制压制长篇大论，缩短生成时间
         }
         
         if self._cfg.reasoning_effort:
@@ -138,15 +139,6 @@ class LLMClient:
             try:
                 # 记录核心动作到 DEBUG
                 logger.debug("LLM 请求开始: model=%s attempt=%d", model, attempt + 1)
-                
-                # [Trajectory] 记录完整的 LLM Prompt
-                import json
-                try:
-                    prompt_str = json.dumps(messages, ensure_ascii=False, indent=2)
-                except Exception:
-                    prompt_str = str(messages)
-                logger.info("=== [Trajectory] LLM Prompt ===\n%s\n================================", prompt_str)
-                
                 response = await _litellm_completion(**kwargs)
                 break
             except Exception as exc:
@@ -167,9 +159,6 @@ class LLMClient:
         input_t, output_t, cached_t, total_t = _extract_usage(usage_dict)
         cost = calculate_cost(response)
         is_truncated, truncate_reason = _detect_truncation(response)
-
-        # [Trajectory] 记录完整的 LLM Response
-        logger.info("=== [Trajectory] LLM Response ===\n%s\n=================================", text)
 
         logger.info(
             "LLM 请求完成: model=%s in=%d(cached=%d) out=%d total=%d cost=$%.4f truncated=%s",

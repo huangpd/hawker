@@ -52,12 +52,39 @@ def _get_client() -> httpx.AsyncClient:
     return _client
 
 
+def _parse_cookies(cookies_input: dict | str | list | None) -> dict | None:
+    """
+    解析多种格式的 Cookie 输入，统一转换为 httpx 支持的 dict 格式。
+    特别是兼容 browser-use (Playwright) 导出的 list[dict] 格式。
+    """
+    if not cookies_input:
+        return None
+    if isinstance(cookies_input, dict):
+        return cookies_input
+    if isinstance(cookies_input, list):
+        # 处理 Playwright 格式: [{'name': 'a', 'value': '1'}, ...]
+        result = {}
+        for c in cookies_input:
+            if isinstance(c, dict) and "name" in c and "value" in c:
+                result[c["name"]] = c["value"]
+        return result
+    if isinstance(cookies_input, str):
+        # 处理原始 Cookie 字符串: "a=1; b=2"
+        result = {}
+        for part in cookies_input.split(";"):
+            part = part.strip()
+            if "=" in part:
+                k, v = part.split("=", 1)
+                result[k.strip()] = v.strip()
+        return result
+    return None
+
 async def http_request(
     url: str, 
     method: str = "GET", 
-    headers: str = "", 
-    body: str = "",
-    cookies: dict | str = "",
+    headers: str | dict = "", 
+    body: str | dict = "",
+    cookies: dict | str | list = "",
     **kwargs: Any
 ) -> str:
     """
@@ -70,6 +97,8 @@ async def http_request(
         final_body = json.dumps(kwargs["json"])
     elif "data" in kwargs:
         final_body = kwargs["data"] if isinstance(kwargs["data"], str) else json.dumps(kwargs["data"])
+    elif isinstance(body, dict):
+        final_body = json.dumps(body)
     
     h: dict[str, str] = {}
     if headers:
@@ -82,11 +111,7 @@ async def http_request(
         h.setdefault("Content-Type", "application/json")
         h.setdefault("Accept", "application/json, text/plain, */*")
     
-    c: dict[str, str] = {}
-    if cookies:
-        try:
-            c = json.loads(cookies) if isinstance(cookies, str) else cookies
-        except Exception: pass
+    c = _parse_cookies(cookies)
 
     h.setdefault("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36")
 
@@ -134,7 +159,7 @@ async def download_file(
     url: str, 
     filename: str | None = None, 
     run_dir: str | None = None, 
-    cookies: dict | str = "",
+    cookies: dict | str | list = "",
     **kwargs: Any
 ) -> str:
     """
@@ -154,11 +179,7 @@ async def download_file(
     elif "data" in kwargs:
         request_body = kwargs["data"] if isinstance(kwargs["data"], str) else json.dumps(kwargs["data"])
 
-    c: dict[str, str] = {}
-    if cookies:
-        try:
-            c = json.loads(cookies) if isinstance(cookies, str) else cookies
-        except Exception: pass
+    c = _parse_cookies(cookies)
 
     _validate_url(url)
     try:

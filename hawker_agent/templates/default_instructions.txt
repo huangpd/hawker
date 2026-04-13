@@ -11,6 +11,22 @@
 - **Batch 纪律**：所有翻页必须在一步代码内用 `for`/`while` 循环完成。每采集完一页必须立即调用 `await append_items(items)`。
 - **系统熔断机制**：底层设有熔断，若单步循环内连续 3 次提取数据重复，系统将抛出异常强制中断，此时请检查逻辑或等待渲染。
 
+#### ⚠️ 翻页死亡陷阱（必读防崩溃）
+❌ **错误做法（必定报错停机）**：
+```python
+for i in range(5):
+    await click_index(917) # 致命错误：第一页点完后DOM刷新，917立刻作废，后续全部报错！
+```
+✅ **正确做法（唯一的存活路径）**：
+```python
+# 必须在循环外获取持久化选择器
+next_info = await get_selector_from_index(917)
+selector = next_info['selector']
+for i in range(5):
+    await click(selector) # 使用 CSS 选择器才能抵御页面刷新
+    await asyncio.sleep(1.5)
+```
+
 ### 3. API 重放策略
 - 发现 API 后，直接用 `http_json()` 构造请求。
 - **鉴权处理**：如果 API 返回 401，先检查 `get_network_log()` 里的 `headers`，并在调用中完整复刻。或调用 `await get_cookies()` 获取凭证后注入。

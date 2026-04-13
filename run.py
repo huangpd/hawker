@@ -73,28 +73,26 @@ TASK="""
 """
 
 TASK="""
+步骤1: 获取 https://huggingface.co/datasets/nvidia/Nemotron-ClimbMix 仓库信息
+步骤5：提取这个仓库所有的文件名和下载URL
+"""
+
+TASK="""
 步骤1: 打开网址 https://mcp.aibase.com/zh/explore 
 步骤2: 找到下一页按钮，获取前10页数据 ，分类点击 "搜索工具",认证状态点击“不限”，编程语言是“python”，类型 “MCP Server”，点击按“按下载量”排序
 步骤3:提取所有项目名称、简介、url
 """
+
 
 TASK="""
 1. 检索web agent paper 获取前5条论文
 2. 返回前5条论文标题，下载链接（可下载的pdf链接），摘要，研究领域
 3. 并下载这5个文论到本地
 """
-
-
 TASK="""
-1. 打开 https://www.ahnews.com.cn/df/hss/pc/lay/node_525.html
-2. 点击"下一页"，获取5页数据
-3. 获取列表页URL和title
-"""
-
-TASK="""
-步骤1: 获取 https://huggingface.co/datasets/nvidia/Nemotron-ClimbMix 仓库信息
-步骤5：提取这个仓库所有的文件名和下载URL
-
+步骤1: 打开 https://www.ahnews.com.cn/df/hss/pc/lay/node_525.html
+步骤2: 点击"下一页"，获取3页数据
+步骤3: 获取列表页URL和title 
 """
 # =================================================================
 

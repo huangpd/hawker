@@ -47,6 +47,14 @@ def truncate_output(text: str, limit: int = 3000) -> str:
     return text[:limit] + f"\n... [截断，共{len(text)}字符]"
 
 
+def extract_observation_text(content: str) -> str:
+    """从历史消息中提取 Observation 段，忽略 RuntimeStatus 等控制信息。"""
+    marker = "Observation:\n"
+    if marker not in content:
+        return content
+    return content.split(marker, 1)[1]
+
+
 def build_summary_message(history: list[dict[str, str]]) -> dict[str, str]:
     """
     将历史消息对（assistant + user observation）压缩为摘要。
@@ -59,9 +67,7 @@ def build_summary_message(history: list[dict[str, str]]) -> dict[str, str]:
         assistant_msg = history[i]["content"] if history[i]["role"] == "assistant" else ""
         observation = ""
         if i + 1 < len(history) and history[i + 1]["role"] == "user":
-            observation = history[i + 1]["content"]
-            if observation.startswith("Observation:\n"):
-                observation = observation[len("Observation:\n") :]
+            observation = extract_observation_text(history[i + 1]["content"])
             i += 2
         else:
             i += 1

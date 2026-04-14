@@ -144,9 +144,13 @@ def register_core_actions(
     registry.register(fn_append, name="append_items", category="数据保存")
     
     fn_checkpoint = _make_save_checkpoint(state, run_dir)
-    fn_checkpoint.__doc__ = "将当前 all_items 进度保存到磁盘（防止任务意外中断丢失数据）。"
+    fn_checkpoint.__doc__ = "将当前 all_items 进度保存到磁盘（防止任务意外中断丢失数据）。不要使用 result.json 作为文件名；正式结果会由系统自动写入 result.json。"
     registry.register(fn_checkpoint, name="save_checkpoint", category="数据保存")
-    
+
+    fn_observe = _make_observe()
+    fn_observe.__doc__ = "向大模型写入本步 Observation。只用它反馈数量、样本、状态；不要用 print 作为正式观察通道。"
+    registry.register(fn_observe, name="observe", category="其他工具")
+
     fn_final = _make_final_answer(state)
     fn_final.__doc__ = "提交最终答案并强制结束任务。必须在确认完成时单独调用一次。"
     registry.register(fn_final, name="final_answer", category="数据保存")
@@ -223,9 +227,18 @@ def _make_append_items(state: CodeAgentState) -> Callable:
     return append_items
 
 
+def _make_observe() -> Callable:
+    def observe(message: object) -> None:
+        emit_observation(str(message))
+    return observe
+
+
 def _make_save_checkpoint(state: CodeAgentState, run_dir: str) -> Callable:
     async def save_checkpoint(filename: str = "checkpoint.json") -> str:
         target = filename or "checkpoint.json"
+        if Path(target).name == "result.json":
+            target = "checkpoint.json"
+            emit_observation("[save_checkpoint] 文件名 result.json 保留给最终结果，已自动改存为 checkpoint.json")
         state.checkpoint_files.add(target)
         result = save_file(
             json.dumps(state.items.get_raw_list(), ensure_ascii=False), target, run_dir

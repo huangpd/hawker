@@ -99,6 +99,9 @@ def save_result_json(
     # result.json 已包含完整数据，清理 checkpoint 文件
     for fname in checkpoint_files or set():
         ckpt = run_dir / fname
+        if ckpt.resolve() == path.resolve():
+            logger.debug("跳过清理与正式结果同名的 checkpoint: %s", ckpt)
+            continue
         if ckpt.exists():
             os.remove(ckpt)
             logger.debug("已清理 checkpoint: %s", ckpt)

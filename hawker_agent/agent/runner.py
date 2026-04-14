@@ -313,7 +313,7 @@ async def run(
                 
                 # 注入当前状态摘要和执行输出
                 status_line = (
-                    f"[状态] 已采集: {len(state.items)}条"
+                    f"[RuntimeStatus] 已采集: {len(state.items)}条"
                     f" | 步骤: {step}/{max_steps}"
                     f" | token: {state.token_stats.total_tokens:,}/{cfg.max_total_tokens:,}"
                     f"{var_line}"
@@ -321,7 +321,7 @@ async def run(
                 # observation 进历史前强制截断至 1500 字符，防止长列表拖垮上下文
                 from hawker_agent.agent.compressor import truncate_output
                 obs_for_history = truncate_output(observation, 1500)
-                history.add_user(f"{status_line}\nObservation:\n{obs_for_history}")
+                history.add_user(f"{status_line}\n\nObservation:\n{obs_for_history}")
 
                 # 9. 关键节点反思注入
                 _inject_reflection_prompts(history, step, state, step_meta, max_steps, no_progress_steps)

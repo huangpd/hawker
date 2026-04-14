@@ -4,6 +4,7 @@ import json as json_mod
 import logging
 import os
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +12,7 @@ from hawker_agent.agent.namespace import build_namespace, register_core_actions
 from hawker_agent.agent.prompts import build_system_prompt
 from hawker_agent.models.state import CodeAgentState
 from hawker_agent.observability import clear_log_context, configure_logging
+from hawker_agent.storage.exporter import save_result_json
 from hawker_agent.tools.data_tools import (
     clean_items,
     ensure,
@@ -140,6 +142,7 @@ class TestBuildNamespace:
         # Core actions
         assert callable(ns["append_items"])
         assert callable(ns["save_checkpoint"])
+        assert callable(ns["observe"])
         assert callable(ns["final_answer"])
         # Data tools
         assert callable(ns["clean_items"])
@@ -216,3 +219,16 @@ def test_register_data_tools() -> None:
     assert "ensure" in sync_caps
     assert "await" not in sync_caps
     assert "asyncio.sleep" in async_caps
+
+
+def test_save_result_json_does_not_delete_result_when_checkpoint_has_same_name(tmp_path: Path) -> None:
+    result_path = save_result_json(
+        tmp_path,
+        [{"id": 1}],
+        "done",
+        checkpoint_files={"result.json"},
+    )
+
+    assert result_path.exists()
+    data = json_mod.loads(result_path.read_text(encoding="utf-8"))
+    assert data["items_count"] == 1

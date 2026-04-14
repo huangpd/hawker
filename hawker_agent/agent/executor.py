@@ -11,6 +11,7 @@ import traceback
 from typing import TYPE_CHECKING
 
 from hawker_agent.agent.compressor import truncate_output
+from hawker_agent.observability import collect_observations
 
 if TYPE_CHECKING:
     from hawker_agent.models.state import CodeAgentState
@@ -65,6 +66,14 @@ def _clean_traceback(tb_str: str) -> str:
     return "Traceback (most recent call last):\n" + "\n".join(cleaned)
 
 
+def _log_legacy_stdout(stdout_text: str) -> None:
+    """记录未结构化 stdout，避免其继续污染 Observation 通道。"""
+    if not stdout_text:
+        return
+    preview = truncate_output(stdout_text, 400).replace("\n", "\\n")
+    logger.info("捕获未结构化 stdout，未注入 Observation: %s", preview)
+
+
 async def execute(
     code: str,
     namespace: HawkerNamespace,
@@ -104,29 +113,32 @@ async def execute(
             )
 
             # 2. 执行：在统一视图中运行
-            with contextlib.redirect_stdout(buf):
-                # 合并为一个真正的 dict，因为 exec 不接受 ChainMap
-                # 我们将这个 dict 同时作为 globals 和 locals 以模拟顶层执行环境
-                view = dict(namespace.exec_view)
-                
-                # 核心：在 ALLOW_TOP_LEVEL_AWAIT 模式下，如果代码含 await，
-                # 使用 eval() 执行编译后的代码块可以正确返回协程对象。
-                # 提示：eval 支持执行以 'exec' 模式编译的代码对象。
-                maybe_coro = eval(compiled, view)
-                
-                if inspect.isawaitable(maybe_coro):
-                    await maybe_coro
-                
-                # 3. 同步回 cell_local
-                for k, v in view.items():
-                    if k not in namespace.system:
-                        namespace.cell_local[k] = v
+            with collect_observations() as observations:
+                with contextlib.redirect_stdout(buf):
+                    # 合并为一个真正的 dict，因为 exec 不接受 ChainMap
+                    # 我们将这个 dict 同时作为 globals 和 locals 以模拟顶层执行环境
+                    view = dict(namespace.exec_view)
+                    
+                    # 核心：在 ALLOW_TOP_LEVEL_AWAIT 模式下，如果代码含 await，
+                    # 使用 eval() 执行编译后的代码块可以正确返回协程对象。
+                    # 提示：eval 支持执行以 'exec' 模式编译的代码对象。
+                    maybe_coro = eval(compiled, view)
+                    
+                    if inspect.isawaitable(maybe_coro):
+                        await maybe_coro
+                    
+                    # 3. 同步回 cell_local
+                    for k, v in view.items():
+                        if k not in namespace.system:
+                            namespace.cell_local[k] = v
 
 
             # 4. 提交事务：变量提升
             namespace.commit()
-            
-            output = truncate_output(buf.getvalue().strip() or "[无输出]")
+
+            legacy_stdout = buf.getvalue().strip()
+            _log_legacy_stdout(legacy_stdout)
+            output = truncate_output("\n".join(observations).strip() or "[无输出]")
             logger.info("代码执行成功")
             return output
 
@@ -134,7 +146,9 @@ async def execute(
             # 5. 回滚事务：彻底恢复 session 并清空 local
             namespace.session = session_snapshot
             namespace.rollback()
-            
+
+            legacy_stdout = buf.getvalue().strip()
+            _log_legacy_stdout(legacy_stdout)
             tb = _clean_traceback(traceback.format_exc(limit=8).strip())
             
             # 错误诊断增强
@@ -145,10 +159,7 @@ async def execute(
             if "NameError" in tb:
                 hints.append("提示: 变量可能未定义或在本步骤回滚中被清除")
             
-            error_msg = buf.getvalue().strip()
-            if error_msg:
-                error_msg += "\n"
-            error_msg += f"[执行错误]\n{tb}"
+            error_msg = f"[执行错误]\n{tb}"
             if hints:
                 error_msg += "\n" + "\n".join(hints)
             

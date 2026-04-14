@@ -8,6 +8,7 @@ from hawker_agent.config import Settings
 from hawker_agent.observability import (
     bind_log_context,
     clear_log_context,
+    collect_observations,
     configure_logging,
     emit_observation,
     generate_trace_id,
@@ -79,20 +80,41 @@ class TestLoggingIntegration:
         assert "step=5" in content
         assert "written" in content
 
-    def test_emit_observation_prints_and_logs(
+    def test_emit_observation_prints_without_sink(
         self,
-        caplog,  # type: ignore[no-untyped-def]
         capsys,  # type: ignore[no-untyped-def]
     ) -> None:
         configure_logging(force=True)
-        logger = logging.getLogger("hawker_agent.observation")
-
-        with caplog.at_level(logging.INFO, logger="hawker_agent.observation"):
-            emit_observation("[obs] something happened", logger=logger)
+        emit_observation("[obs] something happened")
 
         stdout = capsys.readouterr().out
         assert "[obs] something happened" in stdout
-        assert "[obs] something happened" in caplog.text
+
+    def test_emit_observation_uses_active_sink(
+        self,
+        capsys,  # type: ignore[no-untyped-def]
+    ) -> None:
+        with collect_observations() as sink:
+            emit_observation("[obs] buffered")
+
+        assert sink == ["[obs] buffered"]
+        assert capsys.readouterr().out == ""
+
+    def test_configure_logging_replaces_previous_file_handler(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        first_path = tmp_path / "first.log"
+        second_path = tmp_path / "second.log"
+
+        configure_logging(log_path=first_path, force=True)
+        logging.getLogger("hawker_agent.file").info("first")
+
+        configure_logging(log_path=second_path)
+        logging.getLogger("hawker_agent.file").info("second")
+
+        first_content = first_path.read_text(encoding="utf-8")
+        second_content = second_path.read_text(encoding="utf-8")
+        assert "first" in first_content
+        assert "second" not in first_content
+        assert "second" in second_content
 
     def test_init_run_dir_sets_trace_context(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
         cfg = Settings.model_construct(

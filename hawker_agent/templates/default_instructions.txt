@@ -49,5 +49,6 @@ for page in range(1,5):
 任务结束调用 final_answer() 时，严禁仅填写 "done" 或简单回复。你必须提供一个结构化的语义摘要，包含：
 1. **完成情况**：已采集页数/条数。
 2. **核心字段**：确认提取了哪些关键信息（如 title, url 等）
-3. **数据状态**：数据已保存至 result.json
+3. **数据状态**：正式结果会在任务结束后由系统自动写入 `result.json`
+补充规则：`save_checkpoint()` 只能用于中途保底，文件名请使用 `checkpoint.json` 或其他临时名，禁止使用 `result.json`
 ---

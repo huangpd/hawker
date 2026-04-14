@@ -4,6 +4,7 @@ import json
 
 from hawker_agent.agent.compressor import (
     build_summary_message,
+    extract_observation_text,
     compress_messages,
     format_preview,
     truncate_output,
@@ -93,6 +94,12 @@ class TestBuildSummaryMessage:
         ]
         result = build_summary_message(history)
         assert "Step 1" in result["content"]
+
+
+class TestExtractObservationText:
+    def test_extracts_observation_section(self) -> None:
+        content = "[RuntimeStatus] 已采集: 1条\n\nObservation:\n提取成功"
+        assert extract_observation_text(content) == "提取成功"
 
 
 # ─── compress_messages ──────────────────────────────────────────

@@ -22,6 +22,10 @@ _LOG_CONTEXT: contextvars.ContextVar[LogContext] = contextvars.ContextVar(
     "hawker_log_context",
     default=LogContext(),
 )
+_OBSERVATION_SINK: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar(
+    "hawker_observation_sink",
+    default=None,
+)
 _BASE_RECORD_FACTORY = logging.getLogRecordFactory()
 _RECORD_FACTORY_INSTALLED = False
 
@@ -123,6 +127,17 @@ def _build_formatter(with_color: bool = False, for_rich: bool = False) -> loggin
     )
 
 
+@contextlib.contextmanager
+def collect_observations() -> Iterator[list[str]]:
+    """在当前上下文中收集显式 observation，避免与 stdout 混流。"""
+    buffer: list[str] = []
+    token = _OBSERVATION_SINK.set(buffer)
+    try:
+        yield buffer
+    finally:
+        _OBSERVATION_SINK.reset(token)
+
+
 def configure_logging(
     *,
     level: int | str = logging.INFO,
@@ -184,15 +199,33 @@ def configure_logging(
     console_handler.setLevel(target_level)
 
     # 2. 文件 Handler
+    existing_file_handlers = [
+        h for h in root.handlers if getattr(h, "_hawker_handler_kind", "") == "file"
+    ]
     desired_path = log_path.resolve() if log_path else None
-    if desired_path:
+    if desired_path is None:
+        for handler in existing_file_handlers:
+            root.removeHandler(handler)
+            handler.close()
+    else:
         desired_path.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(desired_path, encoding="utf-8")
-        file_handler.setFormatter(_build_formatter(with_color=False))
-        file_handler._hawker_managed = True  # type: ignore
-        file_handler._hawker_handler_kind = "file"  # type: ignore
-        file_handler.setLevel(target_level)
-        root.addHandler(file_handler)
+        active_file_handler: logging.Handler | None = None
+        for handler in existing_file_handlers:
+            handler_path = Path(getattr(handler, "baseFilename", "")).resolve()
+            if handler_path == desired_path and active_file_handler is None:
+                active_file_handler = handler
+                continue
+            root.removeHandler(handler)
+            handler.close()
+
+        if active_file_handler is None:
+            active_file_handler = logging.FileHandler(desired_path, encoding="utf-8")
+            active_file_handler._hawker_managed = True  # type: ignore
+            active_file_handler._hawker_handler_kind = "file"  # type: ignore
+            root.addHandler(active_file_handler)
+
+        active_file_handler.setFormatter(_build_formatter(with_color=False))
+        active_file_handler.setLevel(target_level)
 
     # 抑制三方库噪音
     noisy_loggers = [
@@ -210,6 +243,10 @@ def emit_observation(message: str) -> None:
     1. 直接通过 sys.stdout 输出（被执行器拦截后成为大模型的 Observation）。
     2. 这种方式不带 logging 前缀，保持 Observation 纯净。
     """
+    sink = _OBSERVATION_SINK.get()
+    if sink is not None:
+        sink.append(message)
+        return
     sys.stdout.write(message + "\n")
     sys.stdout.flush()
 

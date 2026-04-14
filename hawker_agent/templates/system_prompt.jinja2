@@ -55,9 +55,9 @@ URL: https://example.com
 ```python
 raw = js("(function(){ return ... })()")
 items = json.loads(raw)
-print(f"提取 {len(items)} 条")
+observe(f"提取 {len(items)} 条")
 if items:
-    print(f"样本: {json.dumps(items[0], ensure_ascii=False)[:120]}")
+    observe(f"样本: {json.dumps(items[0], ensure_ascii=False)[:120]}")
 ```
 {% endraw %}
 
@@ -83,16 +83,18 @@ js() 中的代码必须：
 
 ---
 
-## 打印规范
+## Observation 规范
 
-只 print 关键验证信息，不要输出超过 200 字符：
+只用 `observe(...)` 输出关键验证信息，不要超过 200 字符：
 {% raw %}
 ```python
-print(f"提取 {len(items)} 条")
-print(f"样本: {json.dumps(items[0], ensure_ascii=False)[:120]}")
-print(f"第 {page} 页: {len(page_items)} 条，累计: {len(all_items)}")
+observe(f"提取 {len(items)} 条")
+observe(f"样本: {json.dumps(items[0], ensure_ascii=False)[:120]}")
+observe(f"第 {page} 页: {len(page_items)} 条，累计: {len(all_items)}")
 ```
 {% endraw %}
+
+`print(...)` 只用于本地调试，不会作为正式 Observation 反馈给模型。
 
 ---
 
@@ -107,7 +109,7 @@ print(f"第 {page} 页: {len(page_items)} 条，累计: {len(all_items)}")
 - 看 nav() 返回的 DOM 结构提示来确定选择器，不要用 js() 获取 innerHTML 看结构
 - 提取到数据立刻 append_items() + save_checkpoint()，不要"最后再回来提"
 - JS 代码用 IIFE 包裹，不写注释，不用 jQuery
-- 只 print 关键信息：数量、1 条样本、页码状态，不超过 200 字符
+- 只用 observe() 输出关键信息：数量、1 条样本、页码状态，不超过 200 字符
 
 
 ## 标准作业流程与战术 (SOP)

@@ -10,7 +10,7 @@ from hawker_agent.agent.executor import (
 )
 from hawker_agent.agent.namespace import HawkerNamespace
 from hawker_agent.models.state import CodeAgentState
-from hawker_agent.observability import clear_log_context, configure_logging
+from hawker_agent.observability import clear_log_context, configure_logging, emit_observation
 
 
 # ─── helpers ────────────────────────────────────────────────────
@@ -51,12 +51,18 @@ class TestExecute:
         clear_log_context()
 
     def _make_ns(self) -> HawkerNamespace:
-        return HawkerNamespace(system_dict={"asyncio": asyncio}, run_dir="tmp")
+        return HawkerNamespace(system_dict={"asyncio": asyncio, "observe": emit_observation}, run_dir="tmp")
 
     @pytest.mark.asyncio
-    async def test_simple_print(self) -> None:
+    async def test_print_does_not_become_observation(self) -> None:
         ns = self._make_ns()
         result = await execute("print('hello')", ns)
+        assert result == "[无输出]"
+
+    @pytest.mark.asyncio
+    async def test_explicit_observation(self) -> None:
+        ns = self._make_ns()
+        result = await execute("observe('hello')", ns)
         assert result == "hello"
 
     @pytest.mark.asyncio
@@ -72,7 +78,7 @@ class TestExecute:
         assert "i" not in ns.session
         
         # 验证持久化变量在下一步可用
-        result = await execute("print(len(products_list))", ns)
+        result = await execute("observe(str(len(products_list)))", ns)
         assert result == "3"
 
     @pytest.mark.asyncio
@@ -115,7 +121,7 @@ class TestExecute:
     async def test_async_code_native(self) -> None:
         ns = self._make_ns()
         # 原生支持顶层 await
-        result = await execute("await asyncio.sleep(0.01)\nprint('async success')", ns)
+        result = await execute("await asyncio.sleep(0.01)\nobserve('async success')", ns)
         assert "async success" in result
 
     @pytest.mark.asyncio
@@ -124,7 +130,7 @@ class TestExecute:
         await execute("total_count = 10", ns)
         # 异步环境下的变量修改与持久化
         result = await execute(
-            "await asyncio.sleep(0)\ntotal_count += 5\nprint(total_count)", ns
+            "await asyncio.sleep(0)\ntotal_count += 5\nobserve(str(total_count))", ns
         )
         assert "15" in result
         assert ns.session["total_count"] == 15
@@ -141,7 +147,7 @@ class TestExecute:
     @pytest.mark.asyncio
     async def test_output_truncation(self) -> None:
         ns = self._make_ns()
-        code = "print('x' * 10000)"
+        code = "observe('x' * 10000)"
         result = await execute(code, ns)
         assert len(result) < 10000
         assert "截断" in result
@@ -153,7 +159,7 @@ class TestExecute:
         ns = self._make_ns()
 
         with caplog.at_level(logging.INFO, logger="hawker_agent.agent.executor"):
-            result = await execute("print('hello')", ns, state=state, step=7)
+            result = await execute("observe('hello')", ns, state=state, step=7)
 
         assert result == "hello"
         assert any(record.trace_id == "trace-exec" for record in caplog.records)

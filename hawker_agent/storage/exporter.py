@@ -4,6 +4,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 import nbformat
 from nbformat.v4 import new_code_cell, new_markdown_cell, new_notebook
@@ -11,6 +12,34 @@ from nbformat.v4 import new_code_cell, new_markdown_cell, new_notebook
 from hawker_agent.models.cell import CodeCell
 
 logger = logging.getLogger(__name__)
+
+
+def _to_jsonable(value: Any) -> Any:
+    """将复杂对象尽量转换为可 JSON 序列化的结构。"""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(k): _to_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_to_jsonable(v) for v in value]
+    if hasattr(value, "model_dump"):
+        try:
+            return _to_jsonable(value.model_dump())  # type: ignore[union-attr]
+        except Exception:
+            pass
+    if hasattr(value, "dict"):
+        try:
+            return _to_jsonable(value.dict())  # type: ignore[union-attr]
+        except Exception:
+            pass
+    if hasattr(value, "__dict__"):
+        try:
+            return _to_jsonable(vars(value))
+        except Exception:
+            pass
+    return repr(value)
 
 
 def export_notebook(cells: list[CodeCell], task: str, run_dir: Path) -> Path:
@@ -106,4 +135,32 @@ def save_result_json(
             os.remove(ckpt)
             logger.debug("已清理 checkpoint: %s", ckpt)
 
+    return path
+
+
+def save_llm_io_json(
+    run_dir: Path,
+    task: str,
+    records: list[dict[str, Any]],
+) -> Path:
+    """
+    保存单次任务的完整大模型输入输出记录。
+
+    参数:
+        run_dir (Path): 本次运行目录。
+        task (str): 任务描述。
+        records (list[dict[str, Any]]): 每步的 LLM 输入输出记录。
+
+    返回:
+        Path: 导出的 JSON 文件路径。
+    """
+    path = run_dir / "llm_io.json"
+    payload = {
+        "task": task,
+        "steps": len(records),
+        "records": _to_jsonable(records),
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    logger.info("LLM 输入输出记录已保存: %s", path)
     return path

@@ -20,7 +20,7 @@ from hawker_agent.models.result import CodeAgentResult
 from hawker_agent.models.state import CodeAgentState, TokenStats
 from hawker_agent.models.step import CodeAgentStepMetadata
 from hawker_agent.observability import trace, ToolStatsProcessor, add_trace_processor
-from hawker_agent.storage.exporter import export_notebook, save_result_json
+from hawker_agent.storage.exporter import export_notebook, save_llm_io_json, save_result_json
 from hawker_agent.storage.logger import init_run_dir, log_step, log_summary
 from hawker_agent.tools.registry import ToolRegistry
 
@@ -84,6 +84,7 @@ def _build_result(
     total_steps: int,
     log_path: Path,
     task: str,
+    model_name: str,
     namespace: HawkerNamespace | None = None,
 ) -> CodeAgentResult:
     """构建最终结果对象并执行持久化。"""
@@ -131,12 +132,14 @@ def _build_result(
     log_summary(log_path, state.token_stats, total_duration, total_steps, final_answer)
     nb_path = export_notebook(cells, task, state.run_dir)
     json_path = save_result_json(state.run_dir, state.items.to_list(), final_answer, state.checkpoint_files)
+    llm_io_path = save_llm_io_json(state.run_dir, task, state.llm_records)
 
     return CodeAgentResult(
         answer=final_answer,
         success=stop_reason == "done",
         items=state.items.to_list(),
         run_id=state.run_id,
+        model_name=model_name,
         total_steps=total_steps,
         total_duration=total_duration,
         token_stats=state.token_stats,
@@ -145,6 +148,7 @@ def _build_result(
         log_path=log_path,
         notebook_path=nb_path,
         result_json_path=json_path,
+        llm_io_path=llm_io_path,
     )
 
 
@@ -212,7 +216,7 @@ async def run(
             from hawker_agent.agent.namespace import register_core_actions
             
             register_core_actions(reg, state, str(run_dir))
-            register_browser_tools(reg, br, history)
+            register_browser_tools(reg, br, history, state)
             register_http_tools(reg)
             register_data_tools(reg)
 
@@ -232,11 +236,31 @@ async def run(
             for step in range(1, max_steps + 1):
                 with trace(f"agent_step_{step}", step=step):
                     # 1. 准备并调用 LLM
-                    prompt_msgs = history.to_prompt_messages()
+                    prompt_package = history.build_prompt_package()
+                    prompt_msgs = prompt_package["messages"]
                     llm_response = await llm.complete(prompt_msgs)
 
                     # 2. 处理截断异常
                     if llm_response.is_truncated:
+                        state.llm_records.append(
+                            {
+                                "step": step,
+                                "prompt": prompt_package,
+                                "llm_response": {
+                                    "text": llm_response.text,
+                                    "input_tokens": llm_response.input_tokens,
+                                    "output_tokens": llm_response.output_tokens,
+                                    "cached_tokens": llm_response.cached_tokens,
+                                    "total_tokens": llm_response.total_tokens,
+                                    "cost": llm_response.cost,
+                                    "is_truncated": llm_response.is_truncated,
+                                    "truncate_reason": llm_response.truncate_reason,
+                                    "raw": llm_response.raw,
+                                },
+                                "parsed_output": None,
+                                "execution": None,
+                            }
+                        )
                         logger.warning("Step %d: 响应异常: %s", step, llm_response.truncate_reason)
                         history.add_user(
                             f"[System] 上一次响应异常: {llm_response.truncate_reason}\n"
@@ -291,40 +315,61 @@ async def run(
                     )
 
                     # 判断进度
-                    if step_meta.has_progress(state):
+                    progress_made = step_meta.has_progress(state)
+                    if progress_made:
                         no_progress_steps = 0
                     else:
                         no_progress_steps += 1
-                    
+                    state.no_progress_streak = no_progress_steps
+
                     # 7. 固化 CodeCell 并记录日志
                     cell = step_meta.to_cell(model_output, state.token_stats, len(state.items))
                     cells.append(cell)
                     log_step(log_path, step, step_meta.elapsed(), state.token_stats, model_output.thought, model_output.code, observation)
 
                     # 8. 更新对话历史
-                    history.add_assistant(llm_response.text)
-                    
-                    # 获取持久化变量摘要
                     session_vars = namespace.get_llm_view()
-                    var_summary = []
-                    for k, v in sorted(session_vars.items()):
-                        if k == "run_dir": continue
-                        v_str = str(len(v)) + " 项" if isinstance(v, (list, dict)) else str(v)[:30]
-                        var_summary.append(f"{k}: {v_str}")
-                    
-                    var_line = f" | 变量: {', '.join(var_summary)}" if var_summary else ""
-                    
-                    # 注入当前状态摘要和执行输出
-                    status_line = (
-                        f"[RuntimeStatus] 已采集: {len(state.items)}条"
-                        f" | 步骤: {step}/{max_steps}"
-                        f" | token: {state.token_stats.total_tokens:,}/{cfg.max_total_tokens:,}"
-                        f"{var_line}"
+                    history.record_step(
+                        step=step,
+                        max_steps=max_steps,
+                        assistant_content=llm_response.text,
+                        observation=observation,
+                        namespace_view=session_vars,
+                        items_count=len(state.items),
+                        total_tokens=state.token_stats.total_tokens,
+                        max_total_tokens=cfg.max_total_tokens,
+                        progress=progress_made,
+                        had_error=bool(step_meta.error),
+                        no_progress_steps=no_progress_steps,
                     )
-                    # observation 进历史前强制截断至 1500 字符，防止长列表拖垮上下文
-                    from hawker_agent.agent.compressor import truncate_output
-                    obs_for_history = truncate_output(observation, 1500)
-                    history.add_user(f"{status_line}\n\nObservation:\n{obs_for_history}")
+                    state.llm_records.append(
+                        {
+                            "step": step,
+                            "prompt": prompt_package,
+                            "llm_response": {
+                                "text": llm_response.text,
+                                "input_tokens": llm_response.input_tokens,
+                                "output_tokens": llm_response.output_tokens,
+                                "cached_tokens": llm_response.cached_tokens,
+                                "total_tokens": llm_response.total_tokens,
+                                "cost": llm_response.cost,
+                                "is_truncated": llm_response.is_truncated,
+                                "truncate_reason": llm_response.truncate_reason,
+                                "raw": llm_response.raw,
+                            },
+                            "parsed_output": {
+                                "thought": model_output.thought,
+                                "code": model_output.code,
+                            },
+                            "execution": {
+                                "observation": observation,
+                                "error": step_meta.error,
+                                "progress_made": progress_made,
+                                "items_count": len(state.items),
+                                "no_progress_streak": no_progress_steps,
+                            },
+                        }
+                    )
 
                     # 9. 关键节点反思注入
                     _inject_reflection_prompts(history, step, state, step_meta, max_steps, no_progress_steps)
@@ -332,17 +377,17 @@ async def run(
                     # 10. 终止判断
                     if state.done:
                         logger.info(stats_proc.get_summary())
-                        return _build_result(state, cells, "done", step, log_path, task, namespace)
+                        return _build_result(state, cells, "done", step, log_path, task, cfg.model_name, namespace)
                     
                     if state.is_over_budget(cfg.max_total_tokens):
                         logger.warning("Step %d: Token 预算耗尽", step)
                         logger.info(stats_proc.get_summary())
-                        return _build_result(state, cells, "token_budget", step, log_path, task, namespace)
+                        return _build_result(state, cells, "token_budget", step, log_path, task, cfg.model_name, namespace)
                     
                     if no_progress_steps >= cfg.max_no_progress_steps:
                         logger.warning("Step %d: 连续 %d 步无进展，终止运行", step, no_progress_steps)
                         logger.info(stats_proc.get_summary())
-                        return _build_result(state, cells, "no_progress", step, log_path, task, namespace)
+                        return _build_result(state, cells, "no_progress", step, log_path, task, cfg.model_name, namespace)
                     
                     # 接近上限警告（迁移自 main.py 逻辑）
                     remaining_steps = max_steps - step
@@ -357,4 +402,4 @@ async def run(
             # 步数上限
             logger.warning("任务在达到最大步数 (%d) 后终止", max_steps)
             logger.info(stats_proc.get_summary())
-            return _build_result(state, cells, "max_steps", max_steps, log_path, task, namespace)
+            return _build_result(state, cells, "max_steps", max_steps, log_path, task, cfg.model_name, namespace)

@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from hawker_agent.browser.cdp import get_cdp, run_js
+from hawker_agent.browser.dom_utils import (
+    build_dom_snapshot,
+    render_dom_diff,
+)
 from hawker_agent.browser.netlog import ensure_network_monitor
 from hawker_agent.observability import emit_observation
 from hawker_agent.tools.data_tools import get_type_signature
@@ -26,6 +30,8 @@ class DomActionResult:
 
     summary: str
     dom: str | None = None
+    snapshot: dict | None = None
+    context_mode: str = "summary"
 
 
 def _escape_js_string(value: str) -> str:
@@ -36,8 +42,19 @@ def _escape_js_string(value: str) -> str:
 # ─── 私有辅助 ──────────────────────────────────────────────────
 
 
-async def _get_dom_state(session: BrowserSession) -> str:
-    """调用 browser_use 的 DomService 获取完整的 DOM 状态表示，并增加细腻的感知上下文。"""
+async def _capture_dom_state(session: BrowserSession) -> tuple[str, dict]:
+    """
+    抓取当前页面的完整 DOM 文本和语义快照。
+
+    参数:
+        session (BrowserSession): 浏览器会话。
+
+    返回:
+        tuple[str, dict]: 完整 DOM 文本与对应页面快照。
+
+    异常:
+        无: 内部会自动降级并返回兜底结果。
+    """
     try:
         state = await session.raw.get_browser_state_summary(include_screenshot=False)
         assert state.dom_state is not None
@@ -99,7 +116,17 @@ async def _get_dom_state(session: BrowserSession) -> str:
         else:
             lines.append(full_dom)
 
-        return "\n".join(lines)
+        full_dom = "\n".join(lines)
+        snapshot = build_dom_snapshot(
+            title=state.title,
+            url=state.url,
+            dom_repr=dom_repr,
+            pages_above=pages_above,
+            pages_below=pages_below,
+            pending_requests=len(state.pending_network_requests or []),
+            tabs=len(state.tabs),
+        )
+        return full_dom, snapshot
     except Exception as e:
         # 降级到简单模式
         raw = await run_js(
@@ -109,12 +136,58 @@ async def _get_dom_state(session: BrowserSession) -> str:
         )
         try:
             info = json.loads(raw)
-            return (
-                f"[OK] {info.get('title', '')} | "
+            title = info.get("title", "")
+            fallback_text = (
+                f"[OK] {title} | "
                 f"文本:{info.get('text', 0)}字符 (DOM服务不可用: {e})"
             )
+            snapshot = build_dom_snapshot(title=title, url="", dom_repr="")
+            return fallback_text, snapshot
         except Exception:
-            return f"[OK] 已导航 (DOM服务不可用: {e})"
+            fallback_text = f"[OK] 已导航 (DOM服务不可用: {e})"
+            snapshot = build_dom_snapshot(title="", url="", dom_repr="")
+            return fallback_text, snapshot
+
+
+def _build_dom_action_result(
+    *,
+    full_dom: str,
+    snapshot: dict,
+    mode: str,
+    previous_snapshot: dict | None = None,
+) -> DomActionResult:
+    """
+    根据模式构造浏览器动作结果。
+
+    参数:
+        full_dom (str): 完整 DOM 文本。
+        snapshot (dict): 当前页面快照。
+        mode (str): 上下文模式，支持 summary、diff、full。
+        previous_snapshot (dict | None): 上一个页面快照。
+
+    返回:
+        DomActionResult: 含摘要、可选上下文和快照的动作结果。
+    """
+    mode = (mode or "summary").lower()
+    title = snapshot.get("title") or "(无标题)"
+    interactive_count = snapshot.get("interactive_count", 0)
+
+    if mode == "full":
+        context = full_dom
+        summary = f"[OK] {title} | 交互元素 {interactive_count} | DOM=full"
+    elif mode == "diff":
+        context = render_dom_diff(previous_snapshot, snapshot)
+        summary = f"[OK] {title} | 交互元素 {interactive_count} | DOM=diff"
+    else:
+        context = None
+        summary = f"[OK] {title} | 交互元素 {interactive_count} | DOM=summary"
+
+    return DomActionResult(
+        summary=summary,
+        dom=context,
+        snapshot=snapshot,
+        context_mode=mode,
+    )
 
 
 def _log_js_summary(raw: str) -> None:
@@ -161,34 +234,97 @@ def _build_search_url(query: str, engine: str) -> str | None:
 # ─── 公开动作 ──────────────────────────────────────────────────
 
 
-async def nav(session: BrowserSession, url: str) -> DomActionResult:
-    """导航到 URL，返回 DOM 状态摘要 + 完整 DOM。"""
+async def nav(
+    session: BrowserSession,
+    url: str,
+    mode: str = "summary",
+    previous_snapshot: dict | None = None,
+) -> DomActionResult:
+    """
+    导航到指定 URL，并按模式返回页面上下文。
+
+    参数:
+        session (BrowserSession): 浏览器会话。
+        url (str): 目标页面 URL。
+        mode (str): 上下文模式，支持 summary、diff、full。
+        previous_snapshot (dict | None): 上一个页面快照。
+
+    返回:
+        DomActionResult: 导航后的页面摘要与可选上下文。
+
+    异常:
+        无: 内部异常会降级为可恢复的动作结果。
+    """
     await ensure_network_monitor(session)
     await session.raw.navigate_to(url)
     await asyncio.sleep(1)
     session.netlog_cursor = 0  # 页面跳转后 __netlog 被清空，重置游标
-    dom_text = await _get_dom_state(session)
-    first_line = dom_text.split("\n", 1)[0] if dom_text else "[OK]"
-    return DomActionResult(summary=first_line, dom=dom_text)
+    full_dom, snapshot = await _capture_dom_state(session)
+    return _build_dom_action_result(
+        full_dom=full_dom,
+        snapshot=snapshot,
+        mode=mode,
+        previous_snapshot=previous_snapshot,
+    )
 
 
-async def dom_state(session: BrowserSession) -> DomActionResult:
-    """获取当前页面的完整 DOM 状态（不导航）。"""
-    dom_text = await _get_dom_state(session)
-    first_line = dom_text.split("\n", 1)[0] if dom_text else "[OK]"
-    return DomActionResult(summary=first_line, dom=dom_text)
+async def dom_state(
+    session: BrowserSession,
+    mode: str = "summary",
+    previous_snapshot: dict | None = None,
+) -> DomActionResult:
+    """
+    获取当前页面状态，并按模式返回页面上下文。
+
+    参数:
+        session (BrowserSession): 浏览器会话。
+        mode (str): 上下文模式，支持 summary、diff、full。
+        previous_snapshot (dict | None): 上一个页面快照。
+
+    返回:
+        DomActionResult: 当前页面摘要与可选上下文。
+
+    异常:
+        无: 内部异常会降级为可恢复的动作结果。
+    """
+    full_dom, snapshot = await _capture_dom_state(session)
+    return _build_dom_action_result(
+        full_dom=full_dom,
+        snapshot=snapshot,
+        mode=mode,
+        previous_snapshot=previous_snapshot,
+    )
 
 
 async def nav_search(
-    session: BrowserSession, query: str, engine: str = "duckduckgo"
+    session: BrowserSession,
+    query: str,
+    engine: str = "duckduckgo",
+    mode: str = "summary",
+    previous_snapshot: dict | None = None,
 ) -> DomActionResult:
-    """用搜索引擎搜索，导航到结果页并返回 DOM 状态。"""
+    """
+    使用搜索引擎检索并返回结果页状态。
+
+    参数:
+        session (BrowserSession): 浏览器会话。
+        query (str): 搜索关键词。
+        engine (str): 搜索引擎名称。
+        mode (str): 上下文模式，支持 summary、diff、full。
+        previous_snapshot (dict | None): 上一个页面快照。
+
+    返回:
+        DomActionResult: 搜索结果页摘要与可选上下文。
+
+    异常:
+        无: 不支持的搜索引擎会通过结果摘要返回错误信息。
+    """
     url = _build_search_url(query, engine)
     if not url:
         return DomActionResult(
             summary=f"[错误] 不支持的搜索引擎: {engine}，可用: duckduckgo, google, bing"
         )
-    return await nav(session, url)
+    return await nav(session, url, mode=mode, previous_snapshot=previous_snapshot)
 
 
 async def js(session: BrowserSession, code: str) -> str:
@@ -198,8 +334,29 @@ async def js(session: BrowserSession, code: str) -> str:
     return raw
 
 
-async def click(session: BrowserSession, selector: str, index: int = 0) -> DomActionResult:
-    """点击页面上匹配 CSS 选择器的元素。"""
+async def click(
+    session: BrowserSession,
+    selector: str,
+    index: int = 0,
+    mode: str = "summary",
+    previous_snapshot: dict | None = None,
+) -> DomActionResult:
+    """
+    点击匹配 CSS 选择器的元素，并按模式返回页面上下文。
+
+    参数:
+        session (BrowserSession): 浏览器会话。
+        selector (str): CSS 选择器。
+        index (int): 匹配元素序号。
+        mode (str): 上下文模式，支持 summary、diff、full。
+        previous_snapshot (dict | None): 上一个页面快照。
+
+    返回:
+        DomActionResult: 点击结果摘要与可选上下文。
+
+    异常:
+        无: 内部异常会降级为可恢复的动作结果。
+    """
     safe_selector = _escape_js_string(selector)
     raw = await run_js(
         session,
@@ -221,20 +378,48 @@ async def click(session: BrowserSession, selector: str, index: int = 0) -> DomAc
         if "error" in r:
             return DomActionResult(summary=f"[失败] {r['error']}")
         await asyncio.sleep(1)
-        # 点击后页面可能变化，刷新 DOM
-        dom_text: str | None = None
+        # 点击后页面可能变化，刷新页面快照
         try:
-            dom_text = await _get_dom_state(session)
+            full_dom, snapshot = await _capture_dom_state(session)
         except Exception:
-            pass
-        summary = f"[OK] 点击了 <{r['tag']}>{r['text']}</{r['tag']}> (共{r['total']}个匹配)"
-        return DomActionResult(summary=summary, dom=dom_text)
+            summary = f"[OK] 点击了 <{r['tag']}>{r['text']}</{r['tag']}> (共{r['total']}个匹配)"
+            return DomActionResult(summary=summary)
+        result = _build_dom_action_result(
+            full_dom=full_dom,
+            snapshot=snapshot,
+            mode=mode,
+            previous_snapshot=previous_snapshot,
+        )
+        result.summary = (
+            f"[OK] 点击了 <{r['tag']}>{r['text']}</{r['tag']}> (共{r['total']}个匹配)"
+            f" | DOM={mode}"
+        )
+        return result
     except Exception:
         return DomActionResult(summary=f"[OK] 已点击 {selector}")
 
 
-async def click_index(session: BrowserSession, index: int) -> DomActionResult:
-    """通过 DOM 索引 [i_*] 点击元素（比 CSS 选择器可靠）。"""
+async def click_index(
+    session: BrowserSession,
+    index: int,
+    mode: str = "summary",
+    previous_snapshot: dict | None = None,
+) -> DomActionResult:
+    """
+    通过 DOM 索引点击元素，并按模式返回页面上下文。
+
+    参数:
+        session (BrowserSession): 浏览器会话。
+        index (int): DOM 索引值。
+        mode (str): 上下文模式，支持 summary、diff、full。
+        previous_snapshot (dict | None): 上一个页面快照。
+
+    返回:
+        DomActionResult: 点击结果摘要与可选上下文。
+
+    异常:
+        无: 内部异常会降级为可恢复的动作结果。
+    """
     node = await session.raw.get_element_by_index(index)
     if node is None:
         return DomActionResult(
@@ -277,13 +462,19 @@ async def click_index(session: BrowserSession, index: int) -> DomActionResult:
     except Exception as e:
         return DomActionResult(summary=f"[失败] 点击 [i_{index}] 出错: {e}")
     await asyncio.sleep(0.5)
-    # 点击后刷新 DOM
-    dom_text: str | None = None
+    # 点击后刷新页面快照
     try:
-        dom_text = await _get_dom_state(session)
+        full_dom, snapshot = await _capture_dom_state(session)
     except Exception:
-        pass
-    return DomActionResult(summary=f"[OK] 点击了 [i_{index}] <{tag}>{text}</{tag}>", dom=dom_text)
+        return DomActionResult(summary=f"[OK] 点击了 [i_{index}] <{tag}>{text}</{tag}>")
+    result = _build_dom_action_result(
+        full_dom=full_dom,
+        snapshot=snapshot,
+        mode=mode,
+        previous_snapshot=previous_snapshot,
+    )
+    result.summary = f"[OK] 点击了 [i_{index}] <{tag}>{text}</{tag}> | DOM={mode}"
+    return result
 
 
 async def fill_input(session: BrowserSession, index: int, text: str) -> str:

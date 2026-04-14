@@ -56,6 +56,8 @@ def main(
                 console.print(f"📓 Notebook: {result.notebook_path.name}")
             if result.result_json_path:
                 console.print(f"📊 JSON 结果: {result.result_json_path.name}")
+            if result.llm_io_path:
+                console.print(f"🧠 LLM I/O: {result.llm_io_path.name}")
 
     except KeyboardInterrupt:
         console.print("\n[yellow]用户中断运行。[/yellow]")

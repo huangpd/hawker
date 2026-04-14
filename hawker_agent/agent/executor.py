@@ -93,97 +93,100 @@ async def execute(
     使用 Native Top-level Await 执行代码。
     具备事务语义：成功则 commit 变量提升，失败则 rollback 回滚快照。
     """
-    with trace(f"execute_code_{step or 'anon'}") as span:
-        buf = io.StringIO()
-        logger.info("代码执行开始: chars=%d", len(code))
+    log_context = state.bind_log_context(step) if state else contextlib.nullcontext()
+    with log_context:
+        with trace(f"execute_code_{step or 'anon'}") as span:
+            step_context = state.bind_log_context(step) if state else contextlib.nullcontext()
+            with step_context:
+                buf = io.StringIO()
+                logger.info("代码执行开始: chars=%d", len(code))
 
-        # 事务快照：session 层深拷贝
-        try:
-            session_snapshot = copy.deepcopy(namespace.session)
-        except Exception as e:
-            logger.debug("Namespace 快照失败 (可能包含不可 pickle 的对象): %s", e)
-            session_snapshot = namespace.session.copy() # 降级为浅拷贝
+                # 事务快照：session 层深拷贝
+                try:
+                    session_snapshot = copy.deepcopy(namespace.session)
+                except Exception as e:
+                    logger.debug("Namespace 快照失败 (可能包含不可 pickle 的对象): %s", e)
+                    session_snapshot = namespace.session.copy() # 降级为浅拷贝
 
-        # 0. Static import guard
-        import_err = _check_imports(code)
-        if import_err:
-            namespace.rollback()
-            return import_err
+                # 0. Static import guard
+                import_err = _check_imports(code)
+                if import_err:
+                    namespace.rollback()
+                    return import_err
 
-        try:
-            # 1. 编译：允许顶层 await (Python 3.8+)
-            compiled = compile(
-                code, 
-                "<hawker-cell>", 
-                "exec", 
-                flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
-            )
+                try:
+                    # 1. 编译：允许顶层 await (Python 3.8+)
+                    compiled = compile(
+                        code,
+                        "<hawker-cell>",
+                        "exec",
+                        flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
+                    )
 
-            # 2. 执行：在统一视图中运行
-            with collect_observations() as observations:
-                with contextlib.redirect_stdout(buf):
-                    # 合并为一个真正的 dict，因为 exec 不接受 ChainMap
-                    # 我们将这个 dict 同时作为 globals 和 locals 以模拟顶层执行环境
-                    view = dict(namespace.exec_view)
-                    
-                    # 核心：在 ALLOW_TOP_LEVEL_AWAIT 模式下，如果代码含 await，
-                    # 使用 eval() 执行编译后的代码块可以正确返回协程对象。
-                    # 提示：eval 支持执行以 'exec' 模式编译的代码对象。
-                    maybe_coro = eval(compiled, view)
-                    
-                    if inspect.isawaitable(maybe_coro):
-                        await maybe_coro
-                    
-                    # 3. 同步回 cell_local
-                    for k, v in view.items():
-                        if k not in namespace.system:
-                            namespace.cell_local[k] = v
+                    # 2. 执行：在统一视图中运行
+                    with collect_observations() as observations:
+                        with contextlib.redirect_stdout(buf):
+                            # 合并为一个真正的 dict，因为 exec 不接受 ChainMap
+                            # 我们将这个 dict 同时作为 globals 和 locals 以模拟顶层执行环境
+                            view = dict(namespace.exec_view)
 
+                            # 核心：在 ALLOW_TOP_LEVEL_AWAIT 模式下，如果代码含 await，
+                            # 使用 eval() 执行编译后的代码块可以正确返回协程对象。
+                            # 提示：eval 支持执行以 'exec' 模式编译的代码对象。
+                            maybe_coro = eval(compiled, view)
 
-            # 4. 提交事务：变量提升
-            namespace.commit()
+                            if inspect.isawaitable(maybe_coro):
+                                await maybe_coro
 
-            legacy_stdout = buf.getvalue().strip()
-            _log_legacy_stdout(legacy_stdout)
-            observations_str = "\n".join(observations).strip()
-            output = truncate_output(observations_str or "[无输出]")
-            
-            span.data.update({
-                "observations": observations_str,
-                "legacy_stdout": legacy_stdout,
-            })
-            
-            logger.info("代码执行成功")
-            return output
+                            # 3. 同步回 cell_local
+                            for k, v in view.items():
+                                if k not in namespace.system:
+                                    namespace.cell_local[k] = v
 
-        except Exception:
-            # 5. 回滚事务：彻底恢复 session 并清空 local
-            namespace.session = session_snapshot
-            namespace.rollback()
+                    # 4. 提交事务：变量提升
+                    namespace.commit()
 
-            legacy_stdout = buf.getvalue().strip()
-            _log_legacy_stdout(legacy_stdout)
-            tb = _clean_traceback(traceback.format_exc(limit=8).strip())
-            
-            # 错误诊断增强
-            hints = []
-            if "SyntaxError" in tb:
-                if '"""' in code or "'''" in code:
-                    hints.append("提示: 检查三引号字符串内的引号转义")
-            if "NameError" in tb:
-                hints.append("提示: 变量可能未定义或在本步骤回滚中被清除")
-            
-            error_msg = f"[执行错误]\n{tb}"
-            if hints:
-                error_msg += "\n" + "\n".join(hints)
-            
-            final_output = truncate_output(error_msg)
-            
-            span.status = "error"
-            span.data.update({
-                "error": tb,
-                "legacy_stdout": legacy_stdout,
-            })
-            
-            logger.warning("代码执行失败，已回滚 Namespace 状态")
-            return final_output
+                    legacy_stdout = buf.getvalue().strip()
+                    _log_legacy_stdout(legacy_stdout)
+                    observations_str = "\n".join(observations).strip()
+                    output = truncate_output(observations_str or "[无输出]")
+
+                    span.data.update({
+                        "observations": observations_str,
+                        "legacy_stdout": legacy_stdout,
+                    })
+
+                    logger.info("代码执行成功")
+                    return output
+
+                except Exception:
+                    # 5. 回滚事务：彻底恢复 session 并清空 local
+                    namespace.session = session_snapshot
+                    namespace.rollback()
+
+                    legacy_stdout = buf.getvalue().strip()
+                    _log_legacy_stdout(legacy_stdout)
+                    tb = _clean_traceback(traceback.format_exc(limit=8).strip())
+
+                    # 错误诊断增强
+                    hints = []
+                    if "SyntaxError" in tb:
+                        if '"""' in code or "'''" in code:
+                            hints.append("提示: 检查三引号字符串内的引号转义")
+                    if "NameError" in tb:
+                        hints.append("提示: 变量可能未定义或在本步骤回滚中被清除")
+
+                    error_msg = f"[执行错误]\n{tb}"
+                    if hints:
+                        error_msg += "\n" + "\n".join(hints)
+
+                    final_output = truncate_output(error_msg)
+
+                    span.status = "error"
+                    span.data.update({
+                        "error": tb,
+                        "legacy_stdout": legacy_stdout,
+                    })
+
+                    logger.warning("代码执行失败，已回滚 Namespace 状态")
+                    return final_output

@@ -409,6 +409,83 @@ class TestCodeAgentHistoryList:
         h.to_prompt_messages()
         assert len(h) == original_len
 
+    def test_inject_dom_moves_into_workspace_in_notebook_mode(self) -> None:
+        h = CodeAgentHistoryList.from_task("任务", "系统提示")
+        h.record_step(
+            step=1,
+            max_steps=5,
+            assistant_content="导航\n```python\nnav('https://example.com')\n```",
+            observation="[OK] 页面已加载",
+            namespace_view={},
+            items_count=0,
+            total_tokens=100,
+            max_total_tokens=1000,
+            progress=False,
+            had_error=False,
+            no_progress_steps=0,
+        )
+        h.inject_dom("[DOM Diff]\n- 新增区域: dialog")
+        msgs = h.to_prompt_messages()
+        assert any("[Notebook Workspace]" in m["content"] for m in msgs)
+        assert any("[DOM Workspace]" in m["content"] for m in msgs)
+        assert any("新增区域: dialog" in m["content"] for m in msgs)
+        assert all("[Browser State]" not in m["content"] for m in msgs)
+
+    def test_full_dom_workspace_folds_after_one_prompt(self) -> None:
+        h = CodeAgentHistoryList.from_task("任务", "系统提示")
+        h.record_step(
+            step=1,
+            max_steps=5,
+            assistant_content="导航\n```python\nnav('https://example.com')\n```",
+            observation="[OK] 页面已加载",
+            namespace_view={},
+            items_count=0,
+            total_tokens=100,
+            max_total_tokens=1000,
+            progress=False,
+            had_error=False,
+            no_progress_steps=0,
+        )
+        h.inject_browser_context(
+            "<html>very large dom</html>",
+            mode="full",
+            folded_content="[DOM Summary]\n交互元素: 12",
+        )
+        msgs_first = h.to_prompt_messages()
+        workspace_first = next(m["content"] for m in msgs_first if "[Notebook Workspace]" in m["content"])
+        assert "very large dom" in workspace_first
+        assert "[mode=full" in workspace_first
+
+        msgs_second = h.to_prompt_messages()
+        workspace_second = next(m["content"] for m in msgs_second if "[Notebook Workspace]" in m["content"])
+        assert "very large dom" not in workspace_second
+        assert "[DOM Summary]" in workspace_second
+        assert "[mode=summary" in workspace_second
+
+    def test_build_prompt_package_keeps_split_prompt_parts(self) -> None:
+        h = CodeAgentHistoryList.from_task("任务", "系统提示")
+        h.record_step(
+            step=1,
+            max_steps=5,
+            assistant_content="导航\n```python\nnav('https://example.com')\n```",
+            observation="[OK] 页面已加载",
+            namespace_view={"page_index": 1},
+            items_count=0,
+            total_tokens=100,
+            max_total_tokens=1000,
+            progress=False,
+            had_error=False,
+            no_progress_steps=0,
+        )
+        package = h.build_prompt_package()
+        assert package["mode"] == "notebook"
+        assert package["system_message"]["role"] == "system"
+        assert package["task_message"]["content"] == "任务"
+        assert "[Notebook Workspace]" in package["workspace_message"]["content"]
+        assert "runtime_snapshot" in package["workspace_sections"]
+        assert isinstance(package["source_history_messages"], list)
+        assert package["messages"][0]["role"] == "system"
+
     def test_compress_stub_passthrough(self) -> None:
         h = CodeAgentHistoryList.from_task("任务", "系统提示")
         h.add_assistant("response 1")

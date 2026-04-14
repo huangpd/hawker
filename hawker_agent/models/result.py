@@ -23,6 +23,7 @@ class CodeAgentResult:
 
     # 运行元数据
     run_id: str = ""
+    model_name: str = ""
     total_steps: int = 0
     total_duration: float = 0.0
     token_stats: TokenStats = field(default_factory=TokenStats)
@@ -33,6 +34,7 @@ class CodeAgentResult:
     log_path: Path | None = None
     notebook_path: Path | None = None
     result_json_path: Path | None = None
+    llm_io_path: Path | None = None
 
     @property
     def items_count(self) -> int:

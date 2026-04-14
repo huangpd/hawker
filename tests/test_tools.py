@@ -12,7 +12,7 @@ from hawker_agent.agent.namespace import build_namespace, register_core_actions
 from hawker_agent.agent.prompts import build_system_prompt
 from hawker_agent.models.state import CodeAgentState
 from hawker_agent.observability import clear_log_context, configure_logging
-from hawker_agent.storage.exporter import save_result_json
+from hawker_agent.storage.exporter import save_llm_io_json, save_result_json
 from hawker_agent.tools.data_tools import (
     clean_items,
     ensure,
@@ -232,3 +232,27 @@ def test_save_result_json_does_not_delete_result_when_checkpoint_has_same_name(t
     assert result_path.exists()
     data = json_mod.loads(result_path.read_text(encoding="utf-8"))
     assert data["items_count"] == 1
+
+
+def test_save_llm_io_json_serializes_complex_payload(tmp_path: Path) -> None:
+    class Dummy:
+        def __init__(self) -> None:
+            self.value = "ok"
+
+    path = save_llm_io_json(
+        tmp_path,
+        "测试任务",
+        records=[
+            {
+                "step": 1,
+                "prompt": {"messages": [{"role": "user", "content": "hello"}]},
+                "llm_response": {"raw": Dummy()},
+            }
+        ],
+    )
+
+    assert path.exists()
+    data = json_mod.loads(path.read_text(encoding="utf-8"))
+    assert data["task"] == "测试任务"
+    assert data["steps"] == 1
+    assert data["records"][0]["llm_response"]["raw"]["value"] == "ok"

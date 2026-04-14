@@ -5,6 +5,7 @@ import uuid
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from hawker_agent.models.item import ItemStore
 from hawker_agent.observability import LogContext, bind_log_context, generate_trace_id
@@ -51,6 +52,8 @@ class CodeAgentState:
     # 数据采集
     items: ItemStore = field(default_factory=ItemStore)
     pending_dom: str | None = None
+    last_dom_snapshot: dict[str, Any] | None = None
+    llm_records: list[dict[str, Any]] = field(default_factory=list)
 
     # Token 预算
     token_stats: TokenStats = field(default_factory=TokenStats)
@@ -58,6 +61,7 @@ class CodeAgentState:
     # 进度追踪（用于无进展检测）
     activity_marker: int = 0
     progress_marker: int = 0
+    no_progress_streak: int = 0
 
     # 运行元数据
     trace_id: str = field(default_factory=generate_trace_id)

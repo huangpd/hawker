@@ -6,13 +6,15 @@ from hawker_agent.models.output import CodeAgentModelOutput
 
 
 def parse_response(text: str) -> CodeAgentModelOutput:
-    """
-    从 LLM 响应中提取思考文本和所有代码块。
+    """从 LLM 响应中提取思考文本和代码块。
 
-    支持多个 ```python 块（合并）、```js name 命名块（注入为变量）、
-    以及无语言标记的 ``` 块作为 fallback。
+    支持多个 ```python 块（合并）、```js 命名块（注入为 Python 变量）以及无标签的 ``` 块作为备选方案。
 
-    迁移自 main.py _parse_response。
+    Args:
+        text (str): 来自 LLM 的原始响应文本。
+
+    Returns:
+        CodeAgentModelOutput: 包含提取出的思考内容和合并后的可执行 Python 代码的对象。
     """
     # 匹配所有 fenced code blocks: ```lang [name]\n...\n```
     block_pattern = re.compile(r"(`{3,})(\w+)(?:\s+(\w+))?\n(.*?)\1", re.DOTALL)

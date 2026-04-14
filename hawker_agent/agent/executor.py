@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Modules that LLM-generated code must never import
+# LLM模型生成的代码绝对不能导入的模块
 _BLOCKED_IMPORTS = frozenset({
     "os", "subprocess", "shutil", "sys", "socket", "ctypes",
     "signal", "multiprocessing", "threading", "_thread",
@@ -31,11 +31,18 @@ _BLOCKED_IMPORTS = frozenset({
 
 
 def _check_imports(code: str) -> str | None:
-    """Return an error message if *code* tries to import a blocked module, else None."""
+    """检查代码是否尝试导入任何被禁止的模块。
+
+    Args:
+        code (str): 要检查的 Python 代码。
+
+    Returns:
+        str | None: 如果发现被禁止的模块，则返回错误消息；否则返回 None。
+    """
     try:
         tree = ast.parse(code)
     except SyntaxError:
-        return None  # let compile() report the real error later
+        return None  # 让 compile() 稍后报告真正的错误
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -51,7 +58,16 @@ def _check_imports(code: str) -> str | None:
 
 
 def _clean_traceback(tb_str: str) -> str:
-    """清理 Traceback，移除执行器内部的干扰行。"""
+    """通过移除执行器内部框架来清理回溯 (traceback) 字符串。
+
+    重点关注从执行的代码块开始的框架。
+
+    Args:
+        tb_str (str): 原始的回溯字符串。
+
+    Returns:
+        str: 清理后的回溯字符串。
+    """
     lines = tb_str.split("\n")
     cleaned = []
     # 关注点是从 <hawker-cell> 开始的报错
@@ -68,7 +84,11 @@ def _clean_traceback(tb_str: str) -> str:
 
 
 def _log_legacy_stdout(stdout_text: str) -> None:
-    """记录未结构化 stdout，并自动清理 ANSI 颜色代码。"""
+    """在剥离 ANSI 颜色代码后，记录非结构化的标准输出。
+
+    Args:
+        stdout_text (str): 原始的标准输出文本。
+    """
     if not stdout_text:
         return
     
@@ -89,9 +109,20 @@ async def execute(
     state: CodeAgentState | None = None,
     step: int | None = None,
 ) -> str:
-    """
-    使用 Native Top-level Await 执行代码。
-    具备事务语义：成功则 commit 变量提升，失败则 rollback 回滚快照。
+    """使用原生的顶层 await 执行 Python 代码。
+
+    执行具有事务语义：
+    - 成功时：变量被提升（提交）。
+    - 失败时：会话回滚到之前的状态。
+
+    Args:
+        code (str): 要执行的 Python 代码。
+        namespace (HawkerNamespace): 执行所需的命名空间。
+        state (CodeAgentState | None): 可选的代理状态，用于日志记录。
+        step (int | None): 可选的步骤编号，用于追踪。
+
+    Returns:
+        str: 执行的输出（观察结果或错误消息）。
     """
     log_context = state.bind_log_context(step) if state else contextlib.nullcontext()
     with log_context:

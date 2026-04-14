@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from hawker_agent.browser import actions
 from hawker_agent.browser.actions import DomActionResult
 from hawker_agent.browser.dom_utils import render_dom_summary
 from hawker_agent.tools.registry import ToolRegistry
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from hawker_agent.browser.session import BrowserSession
@@ -52,6 +55,8 @@ def register_browser_tools(
                 mode=mode,
                 folded_content=folded,
             )
+        # 人类日志：记录浏览器动作摘要，便于排查“执行了但 Observation 显示[无输出]”的情况
+        logger.info("浏览器动作摘要: %s", result.summary)
         return result.summary
 
     def _previous_snapshot() -> dict | None:

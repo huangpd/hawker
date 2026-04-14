@@ -29,36 +29,66 @@ _RECORD_FACTORY_INSTALLED = False
 
 
 def generate_trace_id() -> str:
-    """生成 32 位十六进制 trace_id。"""
+    """生成一个 32 位的十六进制追踪 ID (trace ID)。
+
+    Returns:
+        str: 随机生成的 32 位十六进制字符串。
+    """
     return uuid.uuid4().hex
 
 
 def generate_span_id() -> str:
-    """生成 16 位十六进制 span_id。"""
+    """生成一个 16 位的十六进制跨度 ID (span ID)。
+
+    Returns:
+        str: 随机生成的 16 位十六进制字符串。
+    """
     return uuid.uuid4().hex[:16]
 
 
 def get_log_context() -> LogContext:
-    """获取当前协程/线程的日志上下文。"""
+    """获取当前协程或线程的日志上下文。
+
+    Returns:
+        LogContext: 当前的日志上下文。
+    """
     return _LOG_CONTEXT.get()
 
 
 def get_current_span() -> Span | None:
-    """获取当前活跃的 Span。"""
+    """获取当前活动的跨度 (span)。
+
+    Returns:
+        Span | None: 如果存在活动跨度，则返回该跨度；否则返回 None。
+    """
     return _CURRENT_SPAN.get()
 
 
 def add_trace_processor(processor: TraceProcessor) -> None:
-    """注册追踪处理器。"""
+    """注册一个追踪处理器 (trace processor)。
+
+    Args:
+        processor (TraceProcessor): 要添加到注册表中的处理器。
+    """
     if processor not in _TRACE_PROCESSORS:
         _TRACE_PROCESSORS.append(processor)
 
 
 @contextlib.contextmanager
 def trace(name: str, **metadata: Any) -> Iterator[Span]:
-    """
-    核心追踪上下文管理器。
-    支持自动嵌套、计时和异常捕获。
+    """跨度的核心追踪上下文管理器。
+
+    处理跨度的自动嵌套、计时和异常捕获。
+
+    Args:
+        name (str): 跨度的名称。
+        **metadata (Any): 附加到跨度的额外元数据。
+
+    Yields:
+        Iterator[Span]: 创建的跨度对象。
+
+    Raises:
+        Exception: 捕获并重新抛出上下文中发生的任何异常，并在抛出前更新跨度状态。
     """
     parent = get_current_span()
     
@@ -115,14 +145,30 @@ def trace(name: str, **metadata: Any) -> Iterator[Span]:
 
 
 class LoggingTraceProcessor:
-    """默认追踪处理器，将 Span 事件转化为结构化日志。"""
+    """默认的追踪处理器，将跨度事件转换为结构化日志。"""
+
     def __init__(self, logger: logging.Logger | None = None):
+        """初始化日志追踪处理器。
+
+        Args:
+            logger (logging.Logger | None): 要使用的日志记录器。默认为 "hawker.trace"。
+        """
         self.logger = logger or logging.getLogger("hawker.trace")
 
     def on_span_start(self, span: Span) -> None:
+        """当跨度开始时调用。
+
+        Args:
+            span (Span): 已启动的跨度。
+        """
         pass
 
     def on_span_end(self, span: Span) -> None:
+        """当跨度结束时调用，记录其状态和持续时间。
+
+        Args:
+            span (Span): 已结束的跨度。
+        """
         level = logging.INFO if span.status == "success" else logging.ERROR
         
         # 针对工具调用，输出更精简的日志
@@ -142,14 +188,26 @@ class LoggingTraceProcessor:
 
 
 class ToolStatsProcessor:
-    """汇总工具调用情况统计。"""
+    """聚合工具调用的统计信息。"""
+
     def __init__(self):
+        """初始化工具统计处理器。"""
         self.stats: dict[str, dict[str, Any]] = {}
 
     def on_span_start(self, span: Span) -> None:
+        """当跨度开始时调用。
+
+        Args:
+            span (Span): 已启动的跨度。
+        """
         pass
 
     def on_span_end(self, span: Span) -> None:
+        """当跨度结束时调用，更新工具调用的统计信息。
+
+        Args:
+            span (Span): 已结束的跨度。
+        """
         if not span.metadata.get("is_tool"):
             return
         
@@ -166,6 +224,11 @@ class ToolStatsProcessor:
             s["error"] += 1
 
     def get_summary(self) -> str:
+        """生成所有工具调用的摘要字符串。
+
+        Returns:
+            str: 格式化的表格，总结工具调用次数、成功、失败和耗时。
+        """
         if not self.stats:
             return "没有工具调用记录。"
         
@@ -181,7 +244,7 @@ class ToolStatsProcessor:
 
 
 def clear_log_context() -> None:
-    """清空日志上下文，恢复默认值。"""
+    """清除当前日志上下文并重置为默认值。"""
     _LOG_CONTEXT.set(LogContext())
     _CURRENT_SPAN.set(None)
 
@@ -192,7 +255,16 @@ def set_log_context(
     run_id: str | None = None,
     step: int | str | None = None,
 ) -> LogContext:
-    """直接设置日志上下文。"""
+    """直接更新当前日志上下文。
+
+    Args:
+        trace_id (str | None): 可选的追踪 ID。
+        run_id (str | None): 可选的运行 ID。
+        step (int | str | None): 可选的步骤标识符。
+
+    Returns:
+        LogContext: 更新后的日志上下文。
+    """
     current = get_log_context()
     updated = LogContext(
         trace_id=trace_id or current.trace_id,
@@ -210,7 +282,16 @@ def bind_log_context(
     run_id: str | None = None,
     step: int | str | None = None,
 ) -> Iterator[LogContext]:
-    """临时绑定日志上下文。"""
+    """在作用域内临时绑定日志上下文。
+
+    Args:
+        trace_id (str | None): 可选的追踪 ID。
+        run_id (str | None): 可选的运行 ID。
+        step (int | str | None): 可选的步骤标识符。
+
+    Yields:
+        Iterator[LogContext]: 临时生效的日志上下文。
+    """
     current = get_log_context()
     updated = LogContext(
         trace_id=trace_id or current.trace_id,
@@ -225,6 +306,7 @@ def bind_log_context(
 
 
 def _install_log_record_factory() -> None:
+    """安装自定义日志记录工厂，将追踪上下文注入到日志记录中。"""
     global _RECORD_FACTORY_INSTALLED
     if _RECORD_FACTORY_INSTALLED:
         return
@@ -242,6 +324,14 @@ def _install_log_record_factory() -> None:
 
 
 def _normalize_level(level: int | str) -> int:
+    """将日志级别规范化为其整数表示。
+
+    Args:
+        level (int | str): 整数或字符串形式的日志级别。
+
+    Returns:
+        int: 整数形式的日志级别。
+    """
     if isinstance(level, int):
         return level
     value = logging.getLevelName(level.upper())
@@ -251,7 +341,15 @@ def _normalize_level(level: int | str) -> int:
 
 
 def _build_formatter(with_color: bool = False, for_rich: bool = False) -> logging.Formatter:
-    """构建日志格式器。"""
+    """构建日志格式化器。
+
+    Args:
+        with_color (bool): 是否包含 ANSI 颜色代码。默认为 False。
+        for_rich (bool): 是否构建针对 RichHandler 优化的格式化器。默认为 False。
+
+    Returns:
+        logging.Formatter: 配置好的格式化器。
+    """
     if for_rich:
         # RichHandler 已经处理了时间、级别和颜色，我们只需提供上下文信息
         return logging.Formatter("[%(trace_id).8s] [%(step)s] %(message)s")
@@ -268,7 +366,13 @@ def _build_formatter(with_color: bool = False, for_rich: bool = False) -> loggin
 
 @contextlib.contextmanager
 def collect_observations() -> Iterator[list[str]]:
-    """在当前上下文中收集显式 observation，避免与 stdout 混流。"""
+    """收集观察结果到缓冲区中的上下文管理器。
+
+    这可以防止观察结果被直接写入标准输出。
+
+    Yields:
+        Iterator[list[str]]: 将接收观察结果的列表缓冲区。
+    """
     buffer: list[str] = []
     token = _OBSERVATION_SINK.set(buffer)
     try:
@@ -283,7 +387,15 @@ def configure_logging(
     log_path: Path | None = None,
     force: bool = False,
 ) -> None:
-    """初始化统一 logging，默认使用 INFO 级别。"""
+    """初始化并配置日志系统。
+
+    设置具有追踪上下文注入功能的终端和文件日志处理器。
+
+    Args:
+        level (int | str): 日志级别。默认为 logging.INFO。
+        log_path (Path | None): 日志文件路径。如果为 None，则禁用文件日志。
+        force (bool): 如果为 True，则替换现有的处理器。默认为 False。
+    """
     _install_log_record_factory()
     
     # 注册默认 Tracing 处理器
@@ -385,10 +497,13 @@ def configure_logging(
 
 
 def emit_observation(message: str) -> None:
-    """
-    专业的观测摘要发送器。
-    1. 直接通过 sys.stdout 输出（被执行器拦截后成为大模型的 Observation）。
-    2. 这种方式不带 logging 前缀，保持 Observation 纯净。
+    """发出一条观察消息。
+
+    观察结果要么缓存在观察接收器中，要么写入标准输出。
+    这绕过了标准日志系统，为 LLM 提供整洁的输出。
+
+    Args:
+        message (str): 要发出的观察消息。
     """
     sink = _OBSERVATION_SINK.get()
     if sink is not None:
@@ -399,9 +514,15 @@ def emit_observation(message: str) -> None:
 
 
 def emit_tool_observation(tool_name: str, status: str, metrics: str = "", summary: str = "") -> None:
-    """
-    标准化工具观测摘要。
-    格式: [{tool_name}] {status} | {metrics} | {summary}
+    """发出标准化的工具观察消息。
+
+    格式：[{tool_name}] {status} | {metrics} | {summary}
+
+    Args:
+        tool_name (str): 工具名称。
+        status (str): 工具执行状态。
+        metrics (str): 性能指标或其他数字数据。默认为 ""。
+        summary (str): 结果的简短摘要。默认为 ""。
     """
     parts = [f"[{tool_name}] {status}"]
     if metrics:

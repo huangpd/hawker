@@ -29,8 +29,18 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class LLMResponse:
-    """
-    LLM 层原始输出。
+    """LLM 层的原始输出结果封装。
+
+    Attributes:
+        text (str): 生成的文本内容。
+        input_tokens (int): 输入消耗的 Token 数。
+        output_tokens (int): 输出生成的 Token 数。
+        cached_tokens (int): 命中的缓存 Token 数。
+        total_tokens (int): 总消耗 Token 数。
+        cost (float): 本次请求的预估费用（美元）。
+        is_truncated (bool): 响应是否被截断。默认为 False。
+        truncate_reason (str | None): 截断原因描述。默认为 None。
+        raw (object): 底层 SDK 返回的原始响应对象。默认为 None。
     """
     text: str
     input_tokens: int
@@ -44,7 +54,14 @@ class LLMResponse:
 
 
 def _normalize_api_base(base_url: str | None) -> str | None:
-    """清理 API base URL。"""
+    """规范化 API 基础 URL。
+
+    Args:
+        base_url (str | None): 原始的 API 基础 URL。
+
+    Returns:
+        str | None: 规范化后的 URL，如果输入为空则返回 None。
+    """
     if not base_url:
         return None
     normalized = base_url.rstrip("/")
@@ -55,13 +72,28 @@ def _normalize_api_base(base_url: str | None) -> str | None:
 
 
 def _normalize_model_name(model_name: str) -> str:
-    """确保模型名称包含 provider 前缀，OpenAI 兼容接口统一使用 openai/ 前缀。"""
+    """规范化模型名称，确保包含 provider 前缀。
+
+    Args:
+        model_name (str): 原始模型名称。
+
+    Returns:
+        str: 带有 provider 前缀的模型名称。
+    """
     if "/" in model_name:
         return model_name
     return f"openai/{model_name}"
 
 
 def _usage_to_dict(usage: object) -> dict:
+    """将 usage 对象转换为字典格式。
+
+    Args:
+        usage (object): LiteLLM 或 OpenAI 返回的 usage 对象。
+
+    Returns:
+        dict: 转换后的字典。
+    """
     if usage is None:
         return {}
     if isinstance(usage, dict):
@@ -74,7 +106,14 @@ def _usage_to_dict(usage: object) -> dict:
 
 
 def _extract_usage(usage_dict: dict) -> tuple[int, int, int, int]:
-    """从 usage 提取 token 统计，确保返回均为整数。"""
+    """从 usage 字典中提取 Token 统计信息。
+
+    Args:
+        usage_dict (dict): 包含 Token 统计信息的字典。
+
+    Returns:
+        tuple[int, int, int, int]: 包含 (输入 Token, 输出 Token, 缓存 Token, 总 Token) 的元组。
+    """
     prompt_details = usage_dict.get("prompt_tokens_details")
     cached = 0
     if isinstance(prompt_details, dict):
@@ -92,7 +131,14 @@ def _extract_usage(usage_dict: dict) -> tuple[int, int, int, int]:
 
 
 def _detect_truncation(response_obj: object) -> tuple[bool, str | None]:
-    """通过 finish_reason 检测是否截断。"""
+    """通过 finish_reason 检测响应是否被截断。
+
+    Args:
+        response_obj (object): LLM 响应对象。
+
+    Returns:
+        tuple[bool, str | None]: (是否截断, 截断原因) 的元组。
+    """
     choices = getattr(response_obj, "choices", [])
     if choices:
         finish_reason = getattr(choices[0], "finish_reason", None)
@@ -102,17 +148,33 @@ def _detect_truncation(response_obj: object) -> tuple[bool, str | None]:
 
 
 class LLMClient:
-    """
-    通用 OpenAI 兼容 LLM 调用封装。
+    """通用 OpenAI 兼容的 LLM 调用封装类。
+
+    Attributes:
+        _cfg (Settings): 包含 LLM 配置信息的设置对象。
     """
 
     def __init__(self, cfg: Settings | None = None) -> None:
+        """初始化 LLM 客户端。
+
+        Args:
+            cfg (Settings | None, optional): LLM 配置对象。如果为 None，则获取默认设置。默认为 None。
+        """
         self._cfg = cfg or get_settings()
 
     async def complete(self, messages: list[dict[str, str]]) -> LLMResponse:
-        """
-        异步调用 LLM，返回 LLMResponse。
-        包含针对 429 的自动重试。
+        """异步调用 LLM 生成补全结果。
+
+        包含针对 429 (Rate Limit) 的自动重试逻辑。
+
+        Args:
+            messages (list[dict[str, str]]): 发送给 LLM 的消息列表，每个元素包含 "role" 和 "content"。
+
+        Returns:
+            LLMResponse: 封装后的 LLM 响应结果。
+
+        Raises:
+            LLMError: 当请求失败或重试次数耗尽时抛出。
         """
         model = _normalize_model_name(self._cfg.model_name)
         api_base = _normalize_api_base(self._cfg.openai_base_url)

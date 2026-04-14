@@ -8,7 +8,14 @@ from typing import Any
 
 @dataclass
 class MemoryNote:
-    """里程碑/经验教训的高密度长期记忆条目。"""
+    """里程碑/经验教训的高密度长期记忆条目。
+
+    Attributes:
+        step_start (int): 该记录覆盖的起始步骤序号。
+        step_end (int): 该记录覆盖的结束步骤序号。
+        category (str): 记录所属分类（如 login, api, extract 等）。
+        summary (str): 核心内容简要说明。
+    """
 
     step_start: int
     step_end: int
@@ -16,6 +23,11 @@ class MemoryNote:
     summary: str
 
     def render(self) -> str:
+        """渲染单条记忆条目为文本。
+
+        Returns:
+            str: 格式化后的字符串。
+        """
         span = (
             f"Step {self.step_start}"
             if self.step_start == self.step_end
@@ -26,7 +38,16 @@ class MemoryNote:
 
 @dataclass
 class DOMWorkspaceEntry:
-    """DOM Workspace 的可衰减上下文条目。"""
+    """DOM Workspace 的可衰减上下文条目。
+
+    该类用于管理模型接收到的 DOM 视图及其生命周期。
+
+    Attributes:
+        mode (Literal["summary", "diff", "full"]): 当前展示模式。
+        content (str): 当前要呈现的文本内容。
+        folded_content (str): 内容过期/折叠后要显示的摘要。
+        ttl (int | None): 生命周期（步数计数），None 表示永久保留。
+    """
 
     mode: Literal["summary", "diff", "full"]
     content: str
@@ -34,6 +55,11 @@ class DOMWorkspaceEntry:
     ttl: int | None = None
 
     def render(self) -> str:
+        """渲染当前上下文条目为文本。
+
+        Returns:
+            str: 格式化后的字符串。
+        """
         ttl_text = "persistent" if self.ttl is None else str(self.ttl)
         return (
             f"[mode={self.mode} | ttl={ttl_text}]\n"
@@ -41,7 +67,10 @@ class DOMWorkspaceEntry:
         )
 
     def advance(self) -> None:
-        """在一次 prompt 使用后推进生命周期，必要时自动折叠。"""
+        """在一次 prompt 使用后推进生命周期。
+
+        当 ttl 减至 0 时，自动将内容折叠为 summary 模式。
+        """
         if self.ttl is None:
             return
         if self.ttl > 0:
@@ -54,14 +83,26 @@ class DOMWorkspaceEntry:
 
 @dataclass
 class CodeAgentHistoryList:
-    """
-    包装 LLM 对话历史，替换 run() 中的裸 list[dict] 操作。
+    """代理对话历史管理器。
 
-    三项职责（原分散在 run() 主循环中）：
-    1. 管理永久历史（add_assistant / add_user）
-    2. 消息压缩（_compress，原 _compress_messages 逻辑）
-    3. DOM 状态临时注入（inject_dom，原 _browser_state_holder 逻辑）
-       —— DOM 内容仅出现在下次 to_prompt_messages() 返回中，不进入永久历史
+    包装 LLM 对话历史，负责管理永久历史、消息压缩以及 DOM 状态的临时/工作区注入。
+
+    Attributes:
+        _system_prompt (str): 系统提示词内容。
+        _messages (list[dict]): 基础对话历史。
+        _pending_dom (str | None): 待在下一次对话中注入的 DOM 状态文本。
+        _compression_threshold (int): 触发历史压缩的 token 阈值。
+        _count_tokens_fn (Callable[[list[dict]], int] | None): 用于计算 token 数量的函数。
+        _task (str): 原始任务描述。
+        _notebook_mode_enabled (bool): 是否开启 Notebook 模式。
+        _recent_message_window (int): 在 Notebook 模式中保留的最近原始消息数量。
+        _max_milestones (int): 最大里程碑存储数量。
+        _max_lessons (int): 最大经验教训存储数量。
+        _runtime_snapshot (str): 当前运行时快照文本。
+        _namespace_snapshot (str): 命名空间快照文本。
+        _dom_workspace (DOMWorkspaceEntry | None): 增量 DOM 工作区。
+        _milestones (list[MemoryNote]): 存储的里程碑。
+        _lessons (list[MemoryNote]): 存储的经验教训。
     """
 
     _system_prompt: str = ""
@@ -87,6 +128,16 @@ class CodeAgentHistoryList:
         system_prompt: str,
         compression_threshold: int = 12_000,
     ) -> CodeAgentHistoryList:
+        """通过初始任务构建历史记录对象。
+
+        Args:
+            task (str): 代理要执行的任务描述。
+            system_prompt (str): 系统初始指令。
+            compression_threshold (int, optional): 压缩阈值。 Defaults to 12_000.
+
+        Returns:
+            CodeAgentHistoryList: 初始化完成的历史记录管理器。
+        """
         inst = cls(
             _system_prompt=system_prompt,
             _compression_threshold=compression_threshold,
@@ -98,15 +149,28 @@ class CodeAgentHistoryList:
     # -- 写入 --
 
     def add_assistant(self, content: str) -> None:
+        """添加助手的回复消息。
+
+        Args:
+            content (str): 助手回复的正文。
+        """
         self._messages.append({"role": "assistant", "content": content})
 
     def add_user(self, content: str) -> None:
+        """添加用户消息。
+
+        Args:
+            content (str): 用户输入或反馈的正文。
+        """
         self._messages.append({"role": "user", "content": content})
 
     def inject_dom(self, dom: str) -> None:
-        """
-        注入浏览器 DOM 状态。
-        Notebook 模式下会并入 DOM Workspace；普通模式下仍以临时消息注入。
+        """注入待下发的浏览器 DOM 状态信息。
+
+        在普通模式下，这将作为一次性的临时消息注入；在 Notebook 模式下，它可能被并入 DOM 工作区。
+
+        Args:
+            dom (str): 捕获到的 DOM 视图文本。
         """
         self._pending_dom = dom
 
@@ -117,16 +181,12 @@ class CodeAgentHistoryList:
         mode: Literal["summary", "diff", "full"] = "full",
         folded_content: str | None = None,
     ) -> None:
-        """
-        注入带生命周期控制的浏览器上下文。
+        """在 Notebook 模式中注入带生命周期控制的浏览器上下文。
 
-        参数:
-            content (str): 当前要展示的浏览器上下文。
-            mode (Literal["summary", "diff", "full"]): 上下文模式。
-            folded_content (str | None): 上下文过期后的折叠摘要。
-
-        返回:
-            None: 更新内部 DOM Workspace 或待注入上下文。
+        Args:
+            content (str): 要注入的当前浏览器上下文。
+            mode (Literal["summary", "diff", "full"], optional): 上下文模式。默认为 "full"。
+            folded_content (str | None, optional): 超过 TTL 后使用的折叠文本。
         """
         folded = folded_content or content
         if not self._notebook_mode_enabled:
@@ -148,22 +208,22 @@ class CodeAgentHistoryList:
     # -- 读取（供 LLM 调用） --
 
     def to_prompt_messages(self) -> list[dict]:
-        """
-        返回完整消息列表供 LLM 调用：
-        [system] + 压缩后历史 + （如有）临时 DOM 注入。
-        调用后 pending_dom 自动清除。
+        """构建供模型调用的完整消息列表。
+
+        合并系统消息、已压缩的历史消息以及当前的临时 DOM 状态。调用该方法会清空 pending_dom。
+
+        Returns:
+            list[dict]: 符合 OpenAI/LiteLLM 规范的消息列表。
         """
         return self.build_prompt_package()["messages"]
 
     def build_prompt_package(self) -> dict[str, Any]:
-        """
-        构建本次发送给模型的 prompt 包，并保留压缩前后的拆分信息。
+        """构建本次发送给模型的完整数据包。
 
-        参数:
-            无
+        该数据包包含最终的 messages 以及用于调试的内部拆分区块信息。
 
-        返回:
-            dict[str, Any]: 包含最终 messages、拆分区块和被折叠部分的调试信息。
+        Returns:
+            dict[str, Any]: 包含 "messages" 列表及各种辅助调试信息的字典。
         """
         system_msg = {"role": "system", "content": self._system_prompt}
         if self._notebook_mode_enabled and self._pending_dom:
@@ -228,9 +288,22 @@ class CodeAgentHistoryList:
         had_error: bool,
         no_progress_steps: int,
     ) -> None:
-        """
-        进入 Notebook 状态流模式。
-        保留最近少量原始对话作为 STM，同时把历史提纯为里程碑和经验教训。
+        """将当前步骤结果记录到历史中，并视情况推进 Notebook 状态。
+
+        此方法将对话历史转化为提纯后的里程碑、经验教训，并更新运行时快照。
+
+        Args:
+            step (int): 当前步骤序号。
+            max_steps (int): 总最大步数限制。
+            assistant_content (str): 助手该步骤生成的思考与代码。
+            observation (str): 代码执行后的观察结果。
+            namespace_view (dict[str, Any]): 当前代码命名空间视图。
+            items_count (int): 当前累计采集到的项目数。
+            total_tokens (int): 当前累计消耗的 token 数。
+            max_total_tokens (int): 最大 token 额度限制。
+            progress (bool): 本步骤是否取得实质性进展。
+            had_error (bool): 本步骤是否执行报错。
+            no_progress_steps (int): 当前连续无进展的步数计数。
         """
         self._notebook_mode_enabled = True
         self.add_assistant(assistant_content)
@@ -262,9 +335,15 @@ class CodeAgentHistoryList:
     # -- 压缩（原 _compress_messages + _build_summary_message） --
 
     def _compress(self, messages: list[dict]) -> list[dict]:
-        """
-        当 _count_tokens_fn 可用时，调用 compressor 模块执行真正的压缩。
-        未提供 tokenizer 时（测试、向后兼容），直接返回原消息。
+        """执行消息压缩。
+
+        当 token 计数函数可用时，根据压缩阈值对历史消息执行压缩逻辑。
+
+        Args:
+            messages (list[dict]): 待压缩的消息列表。
+
+        Returns:
+            list[dict]: 压缩后的消息列表。
         """
         if self._count_tokens_fn is None:
             return list(messages)
@@ -273,6 +352,11 @@ class CodeAgentHistoryList:
         return compress_messages(messages, self._compression_threshold, self._count_tokens_fn)
 
     def _build_notebook_messages(self) -> dict[str, Any]:
+        """构建 Notebook 模式下的消息分块信息。
+
+        Returns:
+            dict[str, Any]: 包含任务、工作区、最近消息及忽略消息的数据字典。
+        """
         task_msg = self._messages[:1] or [{"role": "user", "content": self._task}]
         recent = self._messages[1:]
         if len(recent) > self._recent_message_window:
@@ -290,6 +374,11 @@ class CodeAgentHistoryList:
         }
 
     def _build_workspace_context(self) -> str:
+        """构建工作区上下文的正文文本。
+
+        Returns:
+            str: 格式化后的工作区内容。
+        """
         milestone_lines = [note.render() for note in self._milestones] or ["- 暂无已确认里程碑"]
         lesson_lines = [note.render() for note in self._lessons] or ["- 暂无失败经验"]
         milestones_text = "\n".join(milestone_lines)
@@ -309,10 +398,18 @@ class CodeAgentHistoryList:
             "[DOM Workspace]\n"
             f"{dom_workspace_text}\n\n"
             "[STM Policy]\n"
-            "后续原始消息只保留最近少量步骤用于调试；更早历史已经提纯进上面的里程碑和经验教训。"
+            "后续原始消息只保留最近少量步骤用于调试；更早历史已经提纯进上面的里程碑 and 经验教训。"
         )
 
     def _fit_notebook_messages(self, messages: list[dict]) -> tuple[list[dict], list[dict]]:
+        """确保 Notebook 消息不超长，必要时剔除较旧的消息。
+
+        Args:
+            messages (list[dict]): 待检查的消息列表。
+
+        Returns:
+            tuple[list[dict], list[dict]]: (保留的消息列表, 被剔除的消息列表)。
+        """
         if self._count_tokens_fn is None:
             return messages, []
         fitted = list(messages)
@@ -333,6 +430,16 @@ class CodeAgentHistoryList:
         had_error: bool,
         no_progress_steps: int,
     ) -> None:
+        """基于当前步骤结果更新长期记忆（里程碑和经验教训）。
+
+        Args:
+            step (int): 当前步骤。
+            assistant_content (str): 助手指令内容。
+            observation (str): 观察输出内容。
+            progress (bool): 是否有进展。
+            had_error (bool): 是否报错。
+            no_progress_steps (int): 连续无进展步数。
+        """
         from hawker_agent.agent.compressor import format_preview, semantic_observation_preview
         from hawker_agent.agent.parser import parse_response
 
@@ -368,6 +475,14 @@ class CodeAgentHistoryList:
 
     @staticmethod
     def _categorize_note(text: str) -> str:
+        """根据文本内容对记忆条目进行分类。
+
+        Args:
+            text (str): 原始文本内容。
+
+        Returns:
+            str: 识别出的类别标签。
+        """
         lowered = text.lower()
         keyword_groups = {
             "login": ("login", "cookie", "captcha", "验证码", "登录"),
@@ -384,6 +499,13 @@ class CodeAgentHistoryList:
 
     @staticmethod
     def _append_note(notes: list[MemoryNote], note: MemoryNote, max_size: int) -> None:
+        """向记忆列表中追加新条目，处理相邻相似类别的合并，并维护最大列表容量。
+
+        Args:
+            notes (list[MemoryNote]): 目标记忆列表。
+            note (MemoryNote): 待追加的新记忆条目。
+            max_size (int): 列表允许的最大容量。
+        """
         if notes and notes[-1].category == note.category and note.step_start <= notes[-1].step_end + 2:
             notes[-1].step_end = note.step_end
             notes[-1].summary = note.summary
@@ -393,12 +515,27 @@ class CodeAgentHistoryList:
             del notes[:-max_size]
 
     def __len__(self) -> int:
+        """获取永久消息列表的长度。
+
+        Returns:
+            int: 消息总数。
+        """
         return len(self._messages)
 
     @property
     def system_prompt(self) -> str:
+        """获取当前的系统提示词。
+
+        Returns:
+            str: 系统提示词文本。
+        """
         return self._system_prompt
 
     @system_prompt.setter
     def system_prompt(self, value: str) -> None:
+        """设置新的系统提示词。
+
+        Args:
+            value (str): 新的提示词文本。
+        """
         self._system_prompt = value

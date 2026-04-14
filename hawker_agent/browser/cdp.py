@@ -11,7 +11,14 @@ logger = logging.getLogger(__name__)
 
 
 async def get_cdp(session: BrowserSession):
-    """获取当前 focus 页面的 CDP session。"""
+    """获取当前 focus 页面的 CDP 会话。
+
+    Args:
+        session (BrowserSession): 浏览器会话对象。
+
+    Returns:
+        CDPSession: 当前 focus 页面的 CDP 会话对象。
+    """
     raw = session.raw
     target_id = raw.agent_focus_target_id
     cdp = await raw.get_or_create_cdp_session(target_id=target_id, focus=False)
@@ -19,7 +26,17 @@ async def get_cdp(session: BrowserSession):
 
 
 async def run_js(session: BrowserSession, expression: str) -> str:
-    """通过 CDP Runtime.evaluate 执行任意 JS，返回字符串结果。"""
+    """通过 CDP Runtime.evaluate 执行任意 JavaScript 代码，并返回字符串结果。
+
+    支持自动处理 Illegal return statement 异常，通过包裹异步 IIFE 进行重试。
+
+    Args:
+        session (BrowserSession): 浏览器会话对象。
+        expression (str): 要执行的 JavaScript 表达式或代码块。
+
+    Returns:
+        str: 执行结果的字符串表示。如果执行出错，返回以 "[JS错误]" 开头的错误描述。
+    """
     clean_expr = expression.strip()
     cdp = await get_cdp(session)
 

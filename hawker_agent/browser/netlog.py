@@ -100,7 +100,14 @@ return 'patched';
 
 
 async def ensure_network_monitor(session: BrowserSession) -> None:
-    """注册网络监听脚本，在每个新页面加载前自动执行（只需调一次）。"""
+    """确保网络监控脚本已注册。
+
+    该脚本会在每个新页面加载前自动执行，用于拦截 Fetch/XHR 请求并记录到 window.__netlog。
+    只需对每个会话调用一次。
+
+    Args:
+        session (BrowserSession): 浏览器会话对象。
+    """
     if session.netlog_installed:
         return
     try:

@@ -35,7 +35,16 @@ def _inject_reflection_prompts(
     max_steps: int,
     no_progress_steps: int,
 ) -> None:
-    """在关键节点注入反思提示。迁移自 main.py 逻辑 3a/3b/3c/3d。"""
+    """在关键间隔注入系统反思 Prompt 以引导代理。
+
+    Args:
+        history (CodeAgentHistoryList): 当前对话历史。
+        step (int): 当前步骤编号。
+        state (CodeAgentState): 当前全局代理状态。
+        step_meta (CodeAgentStepMetadata): 当前步骤的元数据。
+        max_steps (int): 任务允许的最大总步数。
+        no_progress_steps (int): 连续无进展步骤的计数器。
+    """
     # 3a. 首步完成 — 策略确认
     if step == 1:
         history.add_user(
@@ -87,7 +96,21 @@ def _build_result(
     model_name: str,
     namespace: HawkerNamespace | None = None,
 ) -> CodeAgentResult:
-    """构建最终结果对象并执行持久化。"""
+    """构建最终结果对象并执行数据持久化。
+
+    Args:
+        state (CodeAgentState): 最终的全局代理状态。
+        cells (list[CodeCell]): 已执行的笔记本单元格列表。
+        stop_reason (Literal): 代理停止的原因。
+        total_steps (int): 已执行的总步数。
+        log_path (Path): 日志文件路径。
+        task (str): 原始任务描述。
+        model_name (str): 所使用的 LLM 模型名称。
+        namespace (HawkerNamespace | None): 最终执行的命名空间。
+
+    Returns:
+        CodeAgentResult: 代理运行的结构化结果。
+    """
     total_duration = time.time() - state.started_at
     final_answer = state.answer
 
@@ -158,14 +181,16 @@ async def run(
     browser: BrowserSession | None = None,
     registry: ToolRegistry | None = None,
 ) -> CodeAgentResult:
-    """
-    Agent 主循环。
+    """Hawker Agent 循环的主入口。
 
-    参数:
-        task: 自然语言描述的任务
-        max_steps: 最大允许迭代步数
-        browser: 可选，传入已存在的 BrowserSession 以复用
-        registry: 可选，传入自定义 ToolRegistry
+    Args:
+        task (str): 要执行任务的自然语言描述。
+        max_steps (int): 允许的最大迭代步数。默认为 25。
+        browser (BrowserSession | None): 可选的现有浏览器会话，用于复用。
+        registry (ToolRegistry | None): 可选的自定义工具注册表。
+
+    Returns:
+        CodeAgentResult: 代理执行的最终结果。
     """
     cfg = get_settings()
     state = CodeAgentState()

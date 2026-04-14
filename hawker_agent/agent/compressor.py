@@ -8,7 +8,15 @@ from hawker_agent.agent.parser import parse_response
 
 
 def format_preview(text: str, limit: int = 180) -> str:
-    """将文本压缩为单行预览，超长部分截断。"""
+    """将文本压缩为单行预览，必要时进行截断。
+
+    Args:
+        text (str): 要格式化的文本。
+        limit (int): 预览的最大长度。默认为 180。
+
+    Returns:
+        str: 压缩后的单行预览。
+    """
     preview = " ".join(text.split())
     if len(preview) <= limit:
         return preview
@@ -16,9 +24,14 @@ def format_preview(text: str, limit: int = 180) -> str:
 
 
 def truncate_output(text: str, limit: int = 3000) -> str:
-    """
-    截断输出文本，尽量保持 JSON 结构完整。
-    迁移自 main.py _truncate_output。
+    """截断输出文本，同时尝试保持 JSON 的结构完整性。
+
+    Args:
+        text (str): 要截断的输出文本。
+        limit (int): 允许的最大长度。默认为 3000。
+
+    Returns:
+        str: 截断后的文本。
     """
     if len(text) <= limit:
         return text
@@ -49,7 +62,14 @@ def truncate_output(text: str, limit: int = 3000) -> str:
 
 
 def extract_observation_text(content: str) -> str:
-    """从历史消息中提取 Observation 段，忽略 RuntimeStatus 等控制信息。"""
+    """从消息中提取观察 (observation) 部分，忽略控制信息。
+
+    Args:
+        content (str): 消息内容。
+
+    Returns:
+        str: 提取出的观察文本。
+    """
     marker = "Observation:\n"
     if marker not in content:
         return content
@@ -57,7 +77,15 @@ def extract_observation_text(content: str) -> str:
 
 
 def _short_json(value: Any, limit: int = 120) -> str:
-    """将任意值压成短 JSON 片段，避免变量/样本摘要过长。"""
+    """将任意值压缩为短 JSON 片段。
+
+    Args:
+        value (Any): 要压缩的值。
+        limit (int): 最大长度。默认为 120。
+
+    Returns:
+        str: 该值的简短字符串表示。
+    """
     try:
         text = json.dumps(value, ensure_ascii=False)
     except (TypeError, ValueError):
@@ -66,9 +94,16 @@ def _short_json(value: Any, limit: int = 120) -> str:
 
 
 def semantic_observation_preview(text: str, limit: int = 320) -> str:
-    """
-    将 Observation 压缩为更高密度的语义摘要。
-    对大列表/大字典优先返回 count/schema/sample，而不是全量内容。
+    """将观察结果压缩为高密度的语义摘要。
+
+    对于大型列表或字典，它优先返回计数、模式 (schema) 和样本，而不是全部内容。
+
+    Args:
+        text (str): 要压缩的观察文本。
+        limit (int): 摘要的最大长度。默认为 320。
+
+    Returns:
+        str: 高密度的语义摘要。
     """
     stripped = text.strip()
     if not stripped:
@@ -122,7 +157,15 @@ def semantic_observation_preview(text: str, limit: int = 320) -> str:
 
 
 def summarize_namespace_value(value: Any, limit: int = 90) -> str:
-    """为 Notebook 状态视图生成变量摘要。"""
+    """为笔记本状态视图生成变量摘要。
+
+    Args:
+        value (Any): 要摘要的变量值。
+        limit (int): 摘要的最大长度。默认为 90。
+
+    Returns:
+        str: 变量类型和内容的简要摘要。
+    """
     if isinstance(value, list):
         if not value:
             return "list(0)"
@@ -142,7 +185,15 @@ def summarize_namespace_value(value: Any, limit: int = 90) -> str:
 
 
 def build_namespace_snapshot(namespace_view: dict[str, Any], max_items: int = 8) -> str:
-    """将 session 变量压缩为可直接注入 Prompt 的状态快照。"""
+    """将会话变量压缩为用于 Prompt 的状态快照。
+
+    Args:
+        namespace_view (dict[str, Any]): 当前会话的变量。
+        max_items (int): 快照中包含的最大变量数。默认为 8。
+
+    Returns:
+        str: 表示变量快照的格式化字符串。
+    """
     visible_items = [
         (name, value)
         for name, value in sorted(namespace_view.items())
@@ -162,9 +213,13 @@ def build_namespace_snapshot(namespace_view: dict[str, Any], max_items: int = 8)
 
 
 def build_summary_message(history: list[dict[str, str]]) -> dict[str, str]:
-    """
-    将历史消息对（assistant + user observation）压缩为摘要。
-    迁移自 main.py _build_summary_message。
+    """将历史消息对压缩为一条摘要消息。
+
+    Args:
+        history (list[dict[str, str]]): 助手 (assistant) 和用户 (user) 消息列表。
+
+    Returns:
+        dict[str, str]: 包含摘要的单条用户消息。
     """
     lines = ["以下是较早步骤的简要摘要："]
     step_no = 1
@@ -190,14 +245,17 @@ def compress_messages(
     threshold: int,
     count_tokens_fn: Callable[[list[dict[str, str]]], int],
 ) -> list[dict[str, str]]:
-    """
-    当历史超过 threshold token 时，压缩中间部分为摘要。
-    保留最早 1 条（任务消息）和最新 4 条（即最近 2 个步骤）。
-    迁移自 main.py _compress_messages。
+    """当消息历史超过 token 阈值时进行压缩。
 
-    注意：原版保留 messages[:2]（system + task），但在新架构中 system prompt
-    不在 _messages 列表中（由 CodeAgentHistoryList 单独管理），因此这里保留
-    _messages[:1]（task 消息）。
+    保留第一条消息（任务）和最后 4 条消息（最近 2 步），中间的所有内容都将被压缩。
+
+    Args:
+        messages (list[dict[str, str]]): 当前的消息列表。
+        threshold (int): 触发压缩的 token 阈值。
+        count_tokens_fn (Callable): 计算消息 token 数的函数。
+
+    Returns:
+        list[dict[str, str]]: 压缩后的消息列表。
     """
     if count_tokens_fn(messages) <= threshold or len(messages) <= 6:
         return messages

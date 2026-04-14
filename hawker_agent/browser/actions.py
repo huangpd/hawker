@@ -26,7 +26,16 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class DomActionResult:
-    """浏览器动作结果，包含摘要和可选的完整 DOM 状态。"""
+    """浏览器动作执行结果。
+
+    包含动作摘要，以及根据上下文模式可选的完整 DOM 状态或快照。
+
+    Attributes:
+        summary (str): 动作结果的简短描述。
+        dom (str | None): DOM 内容，取决于 context_mode。默认为 None。
+        snapshot (dict | None): 表示页面快照的字典。默认为 None。
+        context_mode (str): DOM 表示模式（summary, diff, full）。默认为 "summary"。
+    """
 
     summary: str
     dom: str | None = None
@@ -35,7 +44,14 @@ class DomActionResult:
 
 
 def _escape_js_string(value: str) -> str:
-    """Escape a value for safe interpolation inside a single-quoted JS string literal."""
+    """转义字符串以便安全地插入到单引号 JS 字符串字面量中。
+
+    Args:
+        value (str): 要转义的字符串。
+
+    Returns:
+        str: 转义后的字符串。
+    """
     return value.replace("\\", "\\\\").replace("'", "\\'")
 
 
@@ -43,17 +59,16 @@ def _escape_js_string(value: str) -> str:
 
 
 async def _capture_dom_state(session: BrowserSession) -> tuple[str, dict]:
-    """
-    抓取当前页面的完整 DOM 文本和语义快照。
+    """捕获当前页面的完整 DOM 文本和语义快照。
 
-    参数:
-        session (BrowserSession): 浏览器会话。
+    Args:
+        session (BrowserSession): 浏览器会话对象。
 
-    返回:
-        tuple[str, dict]: 完整 DOM 文本与对应页面快照。
+    Returns:
+        tuple[str, dict]: 包含完整 DOM 文本和语义快照字典的元组。
 
-    异常:
-        无: 内部会自动降级并返回兜底结果。
+    Raises:
+        Exception: 当获取浏览器状态失败时，将降级到简单模式并返回基础信息。
     """
     try:
         state = await session.raw.get_browser_state_summary(include_screenshot=False)
@@ -156,17 +171,16 @@ def _build_dom_action_result(
     mode: str,
     previous_snapshot: dict | None = None,
 ) -> DomActionResult:
-    """
-    根据模式构造浏览器动作结果。
+    """根据提供的参数构建 DomActionResult。
 
-    参数:
-        full_dom (str): 完整 DOM 文本。
+    Args:
+        full_dom (str): 完整的 DOM 内容。
         snapshot (dict): 当前页面快照。
-        mode (str): 上下文模式，支持 summary、diff、full。
-        previous_snapshot (dict | None): 上一个页面快照。
+        mode (str): 上下文模式（summary, diff, full）。
+        previous_snapshot (dict | None, optional): 用于差异对比的上一个页面快照。默认为 None。
 
-    返回:
-        DomActionResult: 含摘要、可选上下文和快照的动作结果。
+    Returns:
+        DomActionResult: 包含摘要和可选 DOM 上下文的对象。
     """
     mode = (mode or "summary").lower()
     title = snapshot.get("title") or "(无标题)"
@@ -191,7 +205,11 @@ def _build_dom_action_result(
 
 
 def _log_js_summary(raw: str) -> None:
-    """记录 JS 执行结果摘要。"""
+    """记录 JavaScript 执行结果的摘要。
+
+    Args:
+        raw (str): JS 执行后的原始结果字符串。
+    """
     if raw.startswith("[JS错误]"):
         emit_observation(raw[:200])
         return
@@ -221,7 +239,15 @@ def _log_js_summary(raw: str) -> None:
 
 
 def _build_search_url(query: str, engine: str) -> str | None:
-    """构建搜索引擎 URL，不支持的引擎返回 None。"""
+    """构建搜索引擎查询的 URL。
+
+    Args:
+        query (str): 搜索关键词。
+        engine (str): 搜索引擎名称（duckduckgo, google, bing）。
+
+    Returns:
+        str | None: 格式化后的搜索 URL，如果引擎不支持则返回 None。
+    """
     encoded = urllib.parse.quote_plus(query)
     urls = {
         "duckduckgo": f"https://duckduckgo.com/?q={encoded}",
@@ -240,20 +266,16 @@ async def nav(
     mode: str = "summary",
     previous_snapshot: dict | None = None,
 ) -> DomActionResult:
-    """
-    导航到指定 URL，并按模式返回页面上下文。
+    """导航到指定 URL，并按模式返回页面上下文。
 
-    参数:
-        session (BrowserSession): 浏览器会话。
+    Args:
+        session (BrowserSession): 浏览器会话对象。
         url (str): 目标页面 URL。
-        mode (str): 上下文模式，支持 summary、diff、full。
-        previous_snapshot (dict | None): 上一个页面快照。
+        mode (str, optional): 上下文模式，支持 "summary"、"diff"、"full"。默认为 "summary"。
+        previous_snapshot (dict | None, optional): 上一个页面的快照，用于 "diff" 模式。默认为 None。
 
-    返回:
-        DomActionResult: 导航后的页面摘要与可选上下文。
-
-    异常:
-        无: 内部异常会降级为可恢复的动作结果。
+    Returns:
+        DomActionResult: 包含导航结果摘要和可选页面上下文的对象。
     """
     await ensure_network_monitor(session)
     await session.raw.navigate_to(url)
@@ -273,19 +295,15 @@ async def dom_state(
     mode: str = "summary",
     previous_snapshot: dict | None = None,
 ) -> DomActionResult:
-    """
-    获取当前页面状态，并按模式返回页面上下文。
+    """获取当前页面状态，并按模式返回页面上下文。
 
-    参数:
-        session (BrowserSession): 浏览器会话。
-        mode (str): 上下文模式，支持 summary、diff、full。
-        previous_snapshot (dict | None): 上一个页面快照。
+    Args:
+        session (BrowserSession): 浏览器会话对象。
+        mode (str, optional): 上下文模式，支持 "summary"、"diff"、"full"。默认为 "summary"。
+        previous_snapshot (dict | None, optional): 上一个页面的快照，用于 "diff" 模式。默认为 None。
 
-    返回:
-        DomActionResult: 当前页面摘要与可选上下文。
-
-    异常:
-        无: 内部异常会降级为可恢复的动作结果。
+    Returns:
+        DomActionResult: 包含当前页面状态摘要和可选页面上下文的对象。
     """
     full_dom, snapshot = await _capture_dom_state(session)
     return _build_dom_action_result(
@@ -303,21 +321,17 @@ async def nav_search(
     mode: str = "summary",
     previous_snapshot: dict | None = None,
 ) -> DomActionResult:
-    """
-    使用搜索引擎检索并返回结果页状态。
+    """使用搜索引擎进行检索，并返回搜索结果页的状态。
 
-    参数:
-        session (BrowserSession): 浏览器会话。
+    Args:
+        session (BrowserSession): 浏览器会话对象。
         query (str): 搜索关键词。
-        engine (str): 搜索引擎名称。
-        mode (str): 上下文模式，支持 summary、diff、full。
-        previous_snapshot (dict | None): 上一个页面快照。
+        engine (str, optional): 搜索引擎名称。默认为 "duckduckgo"。
+        mode (str, optional): 上下文模式，支持 "summary"、"diff"、"full"。默认为 "summary"。
+        previous_snapshot (dict | None, optional): 上一个页面的快照。默认为 None。
 
-    返回:
-        DomActionResult: 搜索结果页摘要与可选上下文。
-
-    异常:
-        无: 不支持的搜索引擎会通过结果摘要返回错误信息。
+    Returns:
+        DomActionResult: 包含搜索结果页摘要和可选页面上下文的对象。
     """
     url = _build_search_url(query, engine)
     if not url:
@@ -328,7 +342,15 @@ async def nav_search(
 
 
 async def js(session: BrowserSession, code: str) -> str:
-    """在当前页面执行 JavaScript，返回完整结果。"""
+    """在当前页面执行 JavaScript 代码，并返回完整执行结果。
+
+    Args:
+        session (BrowserSession): 浏览器会话对象。
+        code (str): 要执行的 JavaScript 代码。
+
+    Returns:
+        str: JS 执行后的原始结果字符串。
+    """
     raw = await run_js(session, code)
     _log_js_summary(raw)
     return raw
@@ -341,21 +363,17 @@ async def click(
     mode: str = "summary",
     previous_snapshot: dict | None = None,
 ) -> DomActionResult:
-    """
-    点击匹配 CSS 选择器的元素，并按模式返回页面上下文。
+    """点击匹配 CSS 选择器的元素，并按模式返回页面上下文。
 
-    参数:
-        session (BrowserSession): 浏览器会话。
+    Args:
+        session (BrowserSession): 浏览器会话对象。
         selector (str): CSS 选择器。
-        index (int): 匹配元素序号。
-        mode (str): 上下文模式，支持 summary、diff、full。
-        previous_snapshot (dict | None): 上一个页面快照。
+        index (int, optional): 匹配到的元素列表中的索引（从 0 开始）。默认为 0。
+        mode (str, optional): 上下文模式，支持 "summary"、"diff"、"full"。默认为 "summary"。
+        previous_snapshot (dict | None, optional): 上一个页面的快照。默认为 None。
 
-    返回:
-        DomActionResult: 点击结果摘要与可选上下文。
-
-    异常:
-        无: 内部异常会降级为可恢复的动作结果。
+    Returns:
+        DomActionResult: 包含点击动作结果摘要和可选页面上下文的对象。
     """
     safe_selector = _escape_js_string(selector)
     raw = await run_js(
@@ -405,20 +423,16 @@ async def click_index(
     mode: str = "summary",
     previous_snapshot: dict | None = None,
 ) -> DomActionResult:
-    """
-    通过 DOM 索引点击元素，并按模式返回页面上下文。
+    """通过 DOM 索引点击元素，并按模式返回页面上下文。
 
-    参数:
-        session (BrowserSession): 浏览器会话。
-        index (int): DOM 索引值。
-        mode (str): 上下文模式，支持 summary、diff、full。
-        previous_snapshot (dict | None): 上一个页面快照。
+    Args:
+        session (BrowserSession): 浏览器会话对象。
+        index (int): 元素的 DOM 索引值。
+        mode (str, optional): 上下文模式，支持 "summary"、"diff"、"full"。默认为 "summary"。
+        previous_snapshot (dict | None, optional): 上一个页面的快照。默认为 None。
 
-    返回:
-        DomActionResult: 点击结果摘要与可选上下文。
-
-    异常:
-        无: 内部异常会降级为可恢复的动作结果。
+    Returns:
+        DomActionResult: 包含点击动作结果摘要和可选页面上下文的对象。
     """
     node = await session.raw.get_element_by_index(index)
     if node is None:
@@ -478,7 +492,18 @@ async def click_index(
 
 
 async def fill_input(session: BrowserSession, index: int, text: str) -> str:
-    """通过 DOM 索引 [i_*] 向输入框填写文本，模拟逐字输入以触发 React/Vue 事件。"""
+    """通过 DOM 索引向输入框填写文本。
+
+    模拟逐字输入以触发 React/Vue 等前端框架的事件。
+
+    Args:
+        session (BrowserSession): 浏览器会话对象。
+        index (int): 目标输入框的 DOM 索引。
+        text (str): 要填写的文本。
+
+    Returns:
+        str: 动作执行结果的描述字符串。
+    """
     node = await session.raw.get_element_by_index(index)
     if node is None:
         return f"[失败] 未找到索引 [i_{index}] 的元素，用 dom_state() 刷新"
@@ -539,9 +564,15 @@ async def fill_input(session: BrowserSession, index: int, text: str) -> str:
 
 
 async def get_cookies(session: BrowserSession) -> list[dict]:
-    """
-    提取当前浏览器会话的所有 Cookie。
+    """提取当前浏览器会话的所有 Cookie。
+
     采用多级降级策略确保在不同版本的驱动下均能稳定获取。
+
+    Args:
+        session (BrowserSession): 浏览器会话对象。
+
+    Returns:
+        list[dict]: 包含所有 Cookie 字典的列表。
     """
     # 50年架构师提示：Cookie 是会话的灵魂，必须保证提取的鲁棒性
     playwright_cookies = []
@@ -565,7 +596,16 @@ async def get_network_log(
     filter_str: str = "",
     only_new: bool = False,
 ) -> list:
-    """读取页面拦截到的 Fetch/XHR 网络请求日志。"""
+    """读取页面拦截到的 Fetch/XHR 网络请求日志。
+
+    Args:
+        session (BrowserSession): 浏览器会话对象。
+        filter_str (str, optional): 用于过滤 URL 的字符串。默认为 ""。
+        only_new (bool, optional): 是否仅返回自上次读取以来的新请求。默认为 False。
+
+    Returns:
+        list: 包含网络请求日志项的列表。
+    """
     if filter_str:
         safe_filter = _escape_js_string(filter_str)
         js_code = f"""(function(){{

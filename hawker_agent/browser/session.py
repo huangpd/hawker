@@ -14,12 +14,22 @@ logger = logging.getLogger(__name__)
 
 
 class BrowserSession:
-    """
-    browser_use.BrowserSession 的封装，作为 async context manager 使用。
-    支持自动归档下载文件到任务目录，并清理临时残留。
+    """browser_use.BrowserSession 的封装类，支持作为异步上下文管理器使用。
+
+    该类负责启动浏览器会话、自动管理下载目录，并在退出时将下载文件归档到指定的任务目录。
+
+    Attributes:
+        target_dir (Path | None): 任务产物的最终保存目录。
+        netlog_installed (bool): 是否已安装网络监听脚本。
+        netlog_cursor (int): 网络请求日志的读取游标。
     """
 
     def __init__(self, headless: bool | None = None) -> None:
+        """初始化浏览器会话封装对象。
+
+        Args:
+            headless (bool | None, optional): 是否以无头模式运行。如果为 None，则从设置中读取。默认为 None。
+        """
         settings = get_settings()
         self._headless: bool = headless if headless is not None else settings.headless
         self._session: _UpstreamBrowserSession | None = None
@@ -30,6 +40,11 @@ class BrowserSession:
         self.netlog_cursor: int = 0
 
     async def __aenter__(self) -> BrowserSession:
+        """进入异步上下文，启动浏览器并准备下载目录。
+
+        Returns:
+            BrowserSession: 已启动的会话封装对象。
+        """
         # 1. 创建专用的临时下载目录
         self._download_path = Path(tempfile.mkdtemp(prefix="hawker_browser_"))
         
@@ -48,6 +63,13 @@ class BrowserSession:
         exc_val: BaseException | None,
         exc_tb: object,
     ) -> None:
+        """退出异步上下文，关闭浏览器并归档下载产物。
+
+        Args:
+            exc_type (type[BaseException] | None): 异常类型。
+            exc_val (BaseException | None): 异常实例。
+            exc_tb (object): 异常堆栈信息。
+        """
         # 1. 先安全关闭浏览器，确保所有下载流已关闭并落盘
         if self._session:
             try:
@@ -105,7 +127,14 @@ class BrowserSession:
 
     @property
     def raw(self) -> _UpstreamBrowserSession:
-        """获取底层 browser_use.BrowserSession，未启动时抛异常。"""
+        """获取底层的 browser_use.BrowserSession 实例。
+
+        Returns:
+            _UpstreamBrowserSession: 底层会话实例。
+
+        Raises:
+            RuntimeError: 如果在进入异步上下文之前访问该属性。
+        """
         if self._session is None:
             raise RuntimeError("BrowserSession 未启动，请在 async with 块内使用")
         return self._session

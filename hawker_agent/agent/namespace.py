@@ -29,30 +29,52 @@ from hawker_agent.tools.data_tools import (
 
 if TYPE_CHECKING:
     from hawker_agent.models.state import CodeAgentState
+    from hawker_agent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
 
 class HawkerNamespace:
-    """
-    分层命名空间管理类。
-    - system: 系统注入的工具和库 (对 LLM 可见，只读保护)
-    - session: 跨步骤持久化变量 (对 LLM 可见，可序列化)
-    - cell_local: 当前步骤的临时变量 (对 LLM 不可见，步骤结束后丢弃)
+    """代码代理的分层命名空间管理。
+
+    管理三个层级的变量：
+    1. system: 系统注入的工具和库（对 LLM 只读）。
+    2. session: 跨步骤的持久变量（对 LLM 可见，可序列化）。
+    3. cell_local: 当前步骤的临时变量（对 LLM 隐藏）。
+
+    Attributes:
+        system (dict): 只读的系统工具和库。
+        session (dict[str, Any]): 持久化的会话级变量。
+        cell_local (dict[str, Any]): 临时的步骤级变量。
     """
 
     def __init__(self, system_dict: dict, run_dir: str):
+        """初始化 HawkerNamespace。
+
+        Args:
+            system_dict (dict): 系统工具和库的字典。
+            run_dir (str): 当前运行的目录路径。
+        """
         self.system = system_dict
         self.session: dict[str, Any] = {"run_dir": run_dir}
         self.cell_local: dict[str, Any] = {}
         
     @property
     def exec_view(self) -> ChainMap:
-        """返回合并视图供 exec() 使用，优先级: Local > Session > System"""
+        """返回用于 exec() 的合并视图。
+
+        优先级顺序：cell_local > session > system。
+
+        Returns:
+            ChainMap: 合并后的变量视图。
+        """
         return ChainMap(self.cell_local, self.session, self.system)
 
     def commit(self):
-        """执行成功后，将 cell_local 中符合条件的变量提升到 session"""
+        """将符合条件的变量从 cell_local 提升到 session。
+
+        在步骤执行成功后调用。满足持久化条件的临时变量会被移动到会话层。
+        """
         added = []
         for k, v in self.cell_local.items():
             if self._should_persist(k, v):
@@ -64,17 +86,27 @@ class HawkerNamespace:
         self.cell_local.clear()
 
     def rollback(self):
-        """执行失败时，清空临时变量"""
+        """清除临时变量。
+
+        在步骤执行失败后调用，以重置本地状态。
+        """
         self.cell_local.clear()
 
     def _should_persist(self, name: str, value: Any) -> bool:
-        """
-        基于协议的持久化判定
-        规则：
-        1. 系统保留字 -> 不持久化
-        2. 下划线开头 (如 _tmp) -> 显式声明的临时变量，不持久化
-        3. 单字符名 (如 i, j, x) -> 典型的循环/临时变量，不持久化
-        4. 其余变量 -> 全部持久化
+        """确定一个变量是否应该持久化到会话中。
+
+        持久化规则：
+        1. 不是系统保留字。
+        2. 不以下划线开头（例如 _tmp）。
+        3. 变量名长度大于 1（排除 i, j, x 等）。
+        4. 值不是模块。
+
+        Args:
+            name (str): 变量名称。
+            value (Any): 变量值。
+
+        Returns:
+            bool: 如果变量应该持久化则返回 True，否则返回 False。
         """
         if name in self.system: return False
         if name.startswith("_"): return False
@@ -84,12 +116,26 @@ class HawkerNamespace:
         return True
 
     def get_llm_view(self) -> dict:
-        """返回 LLM 应该感知的变量视图 (即 session 层)"""
+        """返回对 LLM 可见的变量视图。
+
+        仅包含非内部的会话变量。
+
+        Returns:
+            dict: 对 LLM 可见的变量字典。
+        """
         return {k: v for k, v in self.session.items() if not k.startswith("_")}
 
 
 def _bind_callable_to_state(state: CodeAgentState, fn: Callable) -> Callable:
-    """为工具函数注入日志上下文。"""
+    """为工具函数注入日志上下文并处理浏览器结果。
+
+    Args:
+        state (CodeAgentState): 当前代理状态。
+        fn (Callable): 要绑定的函数。
+
+    Returns:
+        Callable: 包装后的函数。
+    """
     if inspect.iscoroutinefunction(fn):
         @functools.wraps(fn)
         async def async_wrapped(*args: object, **kwargs: object) -> object:
@@ -113,14 +159,21 @@ def _bind_callable_to_state(state: CodeAgentState, fn: Callable) -> Callable:
 
 
 class ClearableList(list):
-    """包装原始列表，拦截 .clear() 以同步重置 ItemStore。"""
+    """同步 .clear() 操作到 ItemStore 的列表包装器。"""
 
     def __init__(self, data: list, store: object):
+        """初始化 ClearableList。
+
+        Args:
+            data (list): 底层列表数据。
+            store (object): 要同步的 ItemStore 对象。
+        """
         super().__init__(data)
         self._data = data
         self._store = store
 
     def clear(self) -> None:
+        """同时清除列表和同步的 ItemStore。"""
         self._data.clear()
         if hasattr(self._store, "clear"):
             self._store.clear()  # type: ignore
@@ -136,7 +189,15 @@ def register_core_actions(
     state: CodeAgentState,
     run_dir: str,
 ) -> None:
-    """将核心辅助动作注册到工具注册表，使其在 System Prompt 中自动生成。"""
+    """将核心辅助操作注册到工具注册表中。
+
+    这些操作会自动包含在系统 Prompt 的功能列表中。
+
+    Args:
+        registry (ToolRegistry): 要添加操作的注册表。
+        state (CodeAgentState): 当前代理状态。
+        run_dir (str): 当前运行的目录。
+    """
     # 提示：核心动作必须带文档字符串，以便 build_capabilities_list 提取
     
     fn_append = _make_append_items(state)
@@ -161,7 +222,16 @@ def build_namespace(
     tools_dict: dict[str, Callable],
     run_dir: str,
 ) -> dict:
-    """构建只读的系统工具字典"""
+    """构建只读的系统工具字典。
+
+    Args:
+        state (CodeAgentState): 当前代理状态。
+        tools_dict (dict[str, Callable]): 外部工具字典。
+        run_dir (str): 当前运行的目录。
+
+    Returns:
+        dict: 为执行准备好的系统工具字典。
+    """
     sys_dict: dict = {}
 
     # 注入外部工具（包括通过 register_core_actions 注入的核心动作）
@@ -212,6 +282,14 @@ def build_namespace(
 
 
 def _make_append_items(state: CodeAgentState) -> Callable:
+    """创建 append_items 工具函数。
+
+    Args:
+        state (CodeAgentState): 当前代理状态。
+
+    Returns:
+        Callable: append_items 函数。
+    """
     async def append_items(items: object) -> list[dict]:
         normalized = normalize_items(items)
         added, skipped = state.items.append(normalized)
@@ -228,12 +306,26 @@ def _make_append_items(state: CodeAgentState) -> Callable:
 
 
 def _make_observe() -> Callable:
+    """创建 observe 工具函数。
+
+    Returns:
+        Callable: observe 函数。
+    """
     def observe(message: object) -> None:
         emit_observation(str(message))
     return observe
 
 
 def _make_save_checkpoint(state: CodeAgentState, run_dir: str) -> Callable:
+    """创建 save_checkpoint 工具函数。
+
+    Args:
+        state (CodeAgentState): 当前代理状态。
+        run_dir (str): 当前运行的目录。
+
+    Returns:
+        Callable: save_checkpoint 函数。
+    """
     async def save_checkpoint(filename: str = "checkpoint.json") -> str:
         target = filename or "checkpoint.json"
         if Path(target).name == "result.json":
@@ -249,6 +341,14 @@ def _make_save_checkpoint(state: CodeAgentState, run_dir: str) -> Callable:
 
 
 def _make_final_answer(state: CodeAgentState) -> Callable:
+    """创建 final_answer 工具函数。
+
+    Args:
+        state (CodeAgentState): 当前代理状态。
+
+    Returns:
+        Callable: final_answer 函数。
+    """
     async def final_answer(answer: object) -> None:
         state.final_answer_requested = str(answer)
         emit_observation(f"[final_answer] {answer}")

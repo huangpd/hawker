@@ -19,7 +19,19 @@ def init_run_dir(
     run_id: str | None = None,
     trace_id: str | None = None,
 ) -> tuple[Path, Path]:
-    """创建本次运行的目录和日志文件，返回 (run_dir, log_path)。"""
+    """初始化任务运行目录及日志配置。
+
+    创建唯一的运行目录，初始化应用日志，并生成运行摘要文件的头部信息。
+
+    Args:
+        task (str): 任务描述文本。
+        cfg (Settings): 全局配置对象。
+        run_id (str | None, optional): 运行 ID，若不提供则自动生成。
+        trace_id (str | None, optional): 追踪 ID，若不提供则自动生成。
+
+    Returns:
+        tuple[Path, Path]: 包含 (运行目录路径, 运行日志文件路径) 的元组。
+    """
     resolved_run_id = run_id or uuid.uuid4().hex[:12]
     resolved_trace_id = trace_id or generate_trace_id()
     run_dir = cfg.scrape_dir / resolved_run_id
@@ -56,7 +68,17 @@ def log_step(
     code: str,
     observation: str,
 ) -> None:
-    """将单步详情追加到 run.log。"""
+    """将单个步骤的详细执行记录追加到运行日志中。
+
+    Args:
+        log_path (Path): 运行日志文件的路径。
+        step (int): 当前步骤序号。
+        duration (float): 步骤执行耗时。
+        usage (TokenStats): 本步骤的 token 消耗统计。
+        thought (str): 模型生成的思考内容。
+        code (str): 执行的 Python 代码。
+        observation (str): 执行后的观察输出。
+    """
     with open(log_path, "a", encoding="utf-8") as f:
         f.write("\n" + "━" * 80 + "\n")
         f.write(
@@ -79,7 +101,15 @@ def log_summary(
     total_steps: int,
     final_result: str,
 ) -> None:
-    """将运行摘要追加到 run.log。"""
+    """将任务运行的最终摘要统计信息追加到运行日志中。
+
+    Args:
+        log_path (Path): 运行日志文件的路径。
+        token_stats (TokenStats): 累计的 token 消耗统计。
+        total_duration (float): 任务总耗时。
+        total_steps (int): 执行的总步数。
+        final_result (str): 任务的最终结果描述。
+    """
     with open(log_path, "a", encoding="utf-8") as f:
         f.write("\n" + "=" * 80 + "\n")
         f.write("Summary\n")

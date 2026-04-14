@@ -7,6 +7,7 @@ from hawker_agent.models.output import CodeAgentModelOutput
 from hawker_agent.models.result import CodeAgentResult
 from hawker_agent.models.state import CodeAgentState, TokenStats
 from hawker_agent.models.step import CodeAgentStepMetadata
+from hawker_agent.models.trace import LogContext, Span
 
 __all__ = [
     "CellStatus",
@@ -18,4 +19,6 @@ __all__ = [
     "CodeCell",
     "ItemStore",
     "TokenStats",
+    "LogContext",
+    "Span",
 ]

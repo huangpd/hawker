@@ -12,6 +12,7 @@ from litellm import acompletion as _litellm_completion
 from hawker_agent.config import Settings, get_settings
 from hawker_agent.exceptions import LLMError
 from hawker_agent.llm.cost import calculate_cost
+from hawker_agent.observability import trace
 
 # --- 彻底静音 LiteLLM ---
 litellm.set_verbose = False
@@ -116,63 +117,74 @@ class LLMClient:
         model = _normalize_model_name(self._cfg.model_name)
         api_base = _normalize_api_base(self._cfg.openai_base_url)
 
-        # LiteLLM 警告: Gemini 3 系列模型 (如 gemini-3-flash-preview) 必须使用 temperature=1.0
-        temperature = 1.0 if "gemini" in model.lower() else 0.7
+        with trace("llm_generation", model=model) as span:
+            # LiteLLM 警告: Gemini 3 系列模型 (如 gemini-3-flash-preview) 必须使用 temperature=1.0
+            temperature = 1.0 if "gemini" in model.lower() else 0.7
 
-        kwargs: dict = {
-            "model": model,
-            "messages": messages,
-            "api_key": self._cfg.openai_api_key,
-            "base_url": api_base,
-            "timeout": 180,
-            "temperature": temperature,
-            "max_tokens": 1500,  # 强制压制长篇大论，缩短生成时间
-        }
-        
-        if self._cfg.reasoning_effort:
-            kwargs["reasoning_effort"] = self._cfg.reasoning_effort
+            kwargs: dict = {
+                "model": model,
+                "messages": messages,
+                "api_key": self._cfg.openai_api_key,
+                "base_url": api_base,
+                "timeout": 180,
+                "temperature": temperature,
+                "max_tokens": 1500,  # 强制压制长篇大论，缩短生成时间
+            }
+            
+            if self._cfg.reasoning_effort:
+                kwargs["reasoning_effort"] = self._cfg.reasoning_effort
 
-        max_retries = 3
-        retry_delay = 5
+            max_retries = 3
+            retry_delay = 5
 
-        for attempt in range(max_retries):
-            try:
-                # 记录核心动作到 DEBUG
-                logger.debug("LLM 请求开始: model=%s attempt=%d", model, attempt + 1)
-                response = await _litellm_completion(**kwargs)
-                break
-            except Exception as exc:
-                exc_str = str(exc)
-                if "429" in exc_str or "RESOURCE_EXHAUSTED" in exc_str:
-                    if attempt < max_retries - 1:
-                        logger.warning("遇到限额，%ds 后重试...", retry_delay)
-                        await asyncio.sleep(retry_delay)
-                        continue
-                logger.exception("LLM 请求失败")
-                raise LLMError(f"LiteLLM 请求失败: {exc}") from exc
-        else:
-            raise LLMError("LLM 请求重试次数耗尽")
+            response = None
+            for attempt in range(max_retries):
+                try:
+                    # 记录核心动作到 DEBUG
+                    logger.debug("LLM 请求开始: model=%s attempt=%d", model, attempt + 1)
+                    response = await _litellm_completion(**kwargs)
+                    break
+                except Exception as exc:
+                    exc_str = str(exc)
+                    if "429" in exc_str or "RESOURCE_EXHAUSTED" in exc_str:
+                        if attempt < max_retries - 1:
+                            logger.warning("遇到限额，%ds 后重试...", retry_delay)
+                            await asyncio.sleep(retry_delay)
+                            continue
+                    logger.exception("LLM 请求失败")
+                    raise LLMError(f"LiteLLM 请求失败: {exc}") from exc
+            else:
+                raise LLMError("LLM 请求重试次数耗尽")
 
-        # 提取数据
-        text = response.choices[0].message.content or ""
-        usage_dict = _usage_to_dict(getattr(response, "usage", None))
-        input_t, output_t, cached_t, total_t = _extract_usage(usage_dict)
-        cost = calculate_cost(response)
-        is_truncated, truncate_reason = _detect_truncation(response)
+            # 提取数据
+            text = response.choices[0].message.content or ""
+            usage_dict = _usage_to_dict(getattr(response, "usage", None))
+            input_t, output_t, cached_t, total_t = _extract_usage(usage_dict)
+            cost = calculate_cost(response)
+            is_truncated, truncate_reason = _detect_truncation(response)
 
-        logger.info(
-            "LLM 请求完成: model=%s in=%d(cached=%d) out=%d total=%d cost=$%.4f truncated=%s",
-            model, input_t, cached_t, output_t, total_t, cost, "yes" if is_truncated else "no"
-        )
+            # 丰富 Span 数据
+            span.data.update({
+                "input_tokens": input_t,
+                "output_tokens": output_t,
+                "cached_tokens": cached_t,
+                "cost": cost,
+                "truncated": is_truncated,
+            })
 
-        return LLMResponse(
-            text=text,
-            input_tokens=input_t,
-            output_tokens=output_t,
-            cached_tokens=cached_t,
-            total_tokens=total_t,
-            cost=cost,
-            is_truncated=is_truncated,
-            truncate_reason=truncate_reason,
-            raw=response,
-        )
+            logger.info(
+                "LLM 请求完成: model=%s in=%d(cached=%d) out=%d total=%d cost=$%.4f truncated=%s",
+                model, input_t, cached_t, output_t, total_t, cost, "yes" if is_truncated else "no"
+            )
+
+            return LLMResponse(
+                text=text,
+                input_tokens=input_t,
+                output_tokens=output_t,
+                cached_tokens=cached_t,
+                total_tokens=total_t,
+                cost=cost,
+                is_truncated=is_truncated,
+                truncate_reason=truncate_reason,
+                raw=response,
+            )

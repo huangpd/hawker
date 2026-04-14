@@ -7,11 +7,12 @@ import copy
 import inspect
 import io
 import logging
+import re
 import traceback
 from typing import TYPE_CHECKING
 
 from hawker_agent.agent.compressor import truncate_output
-from hawker_agent.observability import collect_observations
+from hawker_agent.observability import collect_observations, trace
 
 if TYPE_CHECKING:
     from hawker_agent.models.state import CodeAgentState
@@ -40,12 +41,12 @@ def _check_imports(code: str) -> str | None:
             for alias in node.names:
                 top = alias.name.split(".")[0]
                 if top in _BLOCKED_IMPORTS:
-                    return f"[\u5b89\u5168\u9650\u5236] \u7981\u6b62\u5bfc\u5165\u6a21\u5757: {alias.name}"
+                    return f"[安全限制] 禁止导入模块: {alias.name}"
         elif isinstance(node, ast.ImportFrom):
             if node.module:
                 top = node.module.split(".")[0]
                 if top in _BLOCKED_IMPORTS:
-                    return f"[\u5b89\u5168\u9650\u5236] \u7981\u6b62\u5bfc\u5165\u6a21\u5757: {node.module}"
+                    return f"[安全限制] 禁止导入模块: {node.module}"
     return None
 
 
@@ -67,10 +68,18 @@ def _clean_traceback(tb_str: str) -> str:
 
 
 def _log_legacy_stdout(stdout_text: str) -> None:
-    """记录未结构化 stdout，避免其继续污染 Observation 通道。"""
+    """记录未结构化 stdout，并自动清理 ANSI 颜色代码。"""
     if not stdout_text:
         return
-    preview = truncate_output(stdout_text, 400).replace("\n", "\\n")
+    
+    # 正则清理 ANSI 转义序列 (Color Codes)
+    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+    cleaned_text = ansi_escape.sub('', stdout_text).strip()
+    
+    if not cleaned_text:
+        return
+
+    preview = truncate_output(cleaned_text, 400).replace("\n", "\\n")
     logger.info("捕获未结构化 stdout，未注入 Observation: %s", preview)
 
 
@@ -84,9 +93,7 @@ async def execute(
     使用 Native Top-level Await 执行代码。
     具备事务语义：成功则 commit 变量提升，失败则 rollback 回滚快照。
     """
-    log_scope = state.bind_log_context(step) if state is not None else contextlib.nullcontext()
-    
-    with log_scope:
+    with trace(f"execute_code_{step or 'anon'}") as span:
         buf = io.StringIO()
         logger.info("代码执行开始: chars=%d", len(code))
 
@@ -138,7 +145,14 @@ async def execute(
 
             legacy_stdout = buf.getvalue().strip()
             _log_legacy_stdout(legacy_stdout)
-            output = truncate_output("\n".join(observations).strip() or "[无输出]")
+            observations_str = "\n".join(observations).strip()
+            output = truncate_output(observations_str or "[无输出]")
+            
+            span.data.update({
+                "observations": observations_str,
+                "legacy_stdout": legacy_stdout,
+            })
+            
             logger.info("代码执行成功")
             return output
 
@@ -164,5 +178,12 @@ async def execute(
                 error_msg += "\n" + "\n".join(hints)
             
             final_output = truncate_output(error_msg)
+            
+            span.status = "error"
+            span.data.update({
+                "error": tb,
+                "legacy_stdout": legacy_stdout,
+            })
+            
             logger.warning("代码执行失败，已回滚 Namespace 状态")
             return final_output

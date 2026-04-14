@@ -96,7 +96,7 @@ TASK="""
 """
 TASK="""
 1.打开 https://github.com/trending
-2.获取当前页面的项目URL、start、fork、today_start
+2.获取当前页面的项目URL、start、fork、today_start，获取第一页直接返回
 提取字段: 
 - URL: 项目链接 
 - start: start数 

@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import functools
 import inspect
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
+
+from hawker_agent.observability import trace
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -24,9 +30,47 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, ToolSpec] = {}
 
+    def _wrap_tool(self, fn: Callable, name: str) -> Callable:
+        """为工具函数增加 Trace 包装。"""
+        # 检查是否是异步函数 (注意要 unwrap 掉已有的装饰器)
+        if inspect.iscoroutinefunction(inspect.unwrap(fn)):
+            @functools.wraps(fn)
+            async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                with trace(f"tool_{name}", is_tool=True) as span:
+                    # 记录输入参数（排除掉内部大对象，只记录字符串形式）
+                    span.data["kwargs"] = {k: str(v)[:200] for k, v in kwargs.items() if k not in ("session", "run_dir", "history")}
+                    try:
+                        result = await fn(*args, **kwargs)
+                        # 如果是长字符串或复杂对象，记录摘要
+                        span.data["result_len"] = len(str(result)) if result is not None else 0
+                        return result
+                    except Exception as e:
+                        span.status = "error"
+                        span.data["error"] = str(e)
+                        raise
+            return async_wrapper
+        else:
+            @functools.wraps(fn)
+            def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+                with trace(f"tool_{name}", is_tool=True) as span:
+                    span.data["kwargs"] = {k: str(v)[:200] for k, v in kwargs.items() if k not in ("session", "run_dir", "history")}
+                    try:
+                        result = fn(*args, **kwargs)
+                        span.data["result_len"] = len(str(result)) if result is not None else 0
+                        return result
+                    except Exception as e:
+                        span.status = "error"
+                        span.data["error"] = str(e)
+                        raise
+            return sync_wrapper
+
     def register(self, fn: Callable, name: str | None = None, category: str | None = None) -> Callable:
         """注册工具，可作为装饰器使用。"""
         tool_name = name or fn.__name__
+        
+        # 包装原始函数以支持打点统计
+        wrapped_fn = self._wrap_tool(fn, tool_name)
+        
         doc = inspect.getdoc(fn) or ""
         summary = doc.splitlines()[0].strip() if doc else ""
         sig = inspect.signature(fn, eval_str=True)
@@ -35,13 +79,13 @@ class ToolRegistry:
         ret_name = getattr(ret, "__name__", str(ret))
         self._tools[tool_name] = ToolSpec(
             name=tool_name,
-            fn=fn,
+            fn=wrapped_fn,
             description=summary,
             signature=str(sig),
             return_type=ret_name,
             category=category,
         )
-        return fn
+        return wrapped_fn
 
     def build_description(self) -> str:
         """生成详细的工具文档（包含参数、文档字符串等）。"""

@@ -4,24 +4,22 @@ import contextlib
 import contextvars
 import logging
 import sys
+import time
 import uuid
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
-
-@dataclass(frozen=True)
-class LogContext:
-    """日志上下文，挂载到每条 LogRecord 上。"""
-    trace_id: str = "-"
-    run_id: str = "-"
-    step: str = "-"
-
+from hawker_agent.models.trace import LogContext, Span, TraceProcessor
 
 _LOG_CONTEXT: contextvars.ContextVar[LogContext] = contextvars.ContextVar(
     "hawker_log_context",
     default=LogContext(),
 )
+_CURRENT_SPAN: contextvars.ContextVar[Span | None] = contextvars.ContextVar(
+    "hawker_current_span",
+    default=None,
+)
+_TRACE_PROCESSORS: list[TraceProcessor] = []
 _OBSERVATION_SINK: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar(
     "hawker_observation_sink",
     default=None,
@@ -35,14 +33,157 @@ def generate_trace_id() -> str:
     return uuid.uuid4().hex
 
 
+def generate_span_id() -> str:
+    """生成 16 位十六进制 span_id。"""
+    return uuid.uuid4().hex[:16]
+
+
 def get_log_context() -> LogContext:
     """获取当前协程/线程的日志上下文。"""
     return _LOG_CONTEXT.get()
 
 
+def get_current_span() -> Span | None:
+    """获取当前活跃的 Span。"""
+    return _CURRENT_SPAN.get()
+
+
+def add_trace_processor(processor: TraceProcessor) -> None:
+    """注册追踪处理器。"""
+    if processor not in _TRACE_PROCESSORS:
+        _TRACE_PROCESSORS.append(processor)
+
+
+@contextlib.contextmanager
+def trace(name: str, **metadata: Any) -> Iterator[Span]:
+    """
+    核心追踪上下文管理器。
+    支持自动嵌套、计时和异常捕获。
+    """
+    parent = get_current_span()
+    
+    # 优先沿用：1. 父 Span 的 ID; 2. 现有日志上下文中的 ID; 3. 生成新 ID
+    existing_ctx = get_log_context()
+    if parent:
+        trace_id = parent.trace_id
+    elif existing_ctx.trace_id and existing_ctx.trace_id != "-":
+        trace_id = existing_ctx.trace_id
+    else:
+        trace_id = generate_trace_id()
+    
+    span = Span(
+        trace_id=trace_id,
+        span_id=generate_span_id(),
+        parent_id=parent.span_id if parent else None,
+        name=name,
+        metadata=metadata,
+    )
+    
+    # 兼容现有日志系统：绑定 trace_id 和 step
+    log_ctx_token = _LOG_CONTEXT.set(LogContext(
+        trace_id=trace_id,
+        run_id=get_log_context().run_id,
+        step=name
+    ))
+    
+    span_token = _CURRENT_SPAN.set(span)
+    
+    for proc in _TRACE_PROCESSORS:
+        try:
+            proc.on_span_start(span)
+        except Exception:
+            logging.getLogger(__name__).exception("Error in trace processor on_span_start")
+
+    try:
+        yield span
+        span.status = "success"
+    except Exception as e:
+        span.status = "error"
+        span.data["error"] = str(e)
+        span.data["error_type"] = type(e).__name__
+        raise
+    finally:
+        span.end_time = time.time()
+        for proc in _TRACE_PROCESSORS:
+            try:
+                proc.on_span_end(span)
+            except Exception:
+                logging.getLogger(__name__).exception("Error in trace processor on_span_end")
+        
+        _CURRENT_SPAN.reset(span_token)
+        _LOG_CONTEXT.reset(log_ctx_token)
+
+
+class LoggingTraceProcessor:
+    """默认追踪处理器，将 Span 事件转化为结构化日志。"""
+    def __init__(self, logger: logging.Logger | None = None):
+        self.logger = logger or logging.getLogger("hawker.trace")
+
+    def on_span_start(self, span: Span) -> None:
+        pass
+
+    def on_span_end(self, span: Span) -> None:
+        level = logging.INFO if span.status == "success" else logging.ERROR
+        
+        # 针对工具调用，输出更精简的日志
+        if span.metadata.get("is_tool"):
+            msg = f"  [Tool] {span.name} -> {span.status} ({span.elapsed():.3f}s)"
+        else:
+            msg = f"Span Finished: {span.name} | Status: {span.status} | Duration: {span.elapsed():.3f}s"
+            if span.parent_id:
+                msg = f"  {msg} (parent: {span.parent_id})"
+        
+        self.logger.log(level, msg, extra={
+            "span_id": span.span_id,
+            "parent_id": span.parent_id,
+            "span_data": span.data,
+            "span_metadata": span.metadata
+        })
+
+
+class ToolStatsProcessor:
+    """汇总工具调用情况统计。"""
+    def __init__(self):
+        self.stats: dict[str, dict[str, Any]] = {}
+
+    def on_span_start(self, span: Span) -> None:
+        pass
+
+    def on_span_end(self, span: Span) -> None:
+        if not span.metadata.get("is_tool"):
+            return
+        
+        name = span.name.replace("tool_", "")
+        if name not in self.stats:
+            self.stats[name] = {"calls": 0, "success": 0, "error": 0, "total_time": 0.0}
+        
+        s = self.stats[name]
+        s["calls"] += 1
+        s["total_time"] += span.elapsed()
+        if span.status == "success":
+            s["success"] += 1
+        else:
+            s["error"] += 1
+
+    def get_summary(self) -> str:
+        if not self.stats:
+            return "没有工具调用记录。"
+        
+        lines = ["\n🛠️  工具调用汇总统计:"]
+        lines.append(f"{'工具名':<20} | {'次数':<5} | {'成功':<5} | {'失败':<5} | {'平均耗时':<8}")
+        lines.append("-" * 65)
+        
+        for name, s in sorted(self.stats.items(), key=lambda x: x[1]["calls"], reverse=True):
+            avg = s["total_time"] / s["calls"]
+            lines.append(f"{name:<20} | {s['calls']:<5} | {s['success']:<5} | {s['error']:<5} | {avg:.3f}s")
+        
+        return "\n".join(lines)
+
+
 def clear_log_context() -> None:
     """清空日志上下文，恢复默认值。"""
     _LOG_CONTEXT.set(LogContext())
+    _CURRENT_SPAN.set(None)
 
 
 def set_log_context(
@@ -118,12 +259,10 @@ def _build_formatter(with_color: bool = False, for_rich: bool = False) -> loggin
     if with_color:
         return logging.Formatter("\033[2m%(trace_id).8s\033[0m [%(step)s] %(message)s")
     
+    # 文件日志：精简格式，保持 ID 长度一致 (8位)
     return logging.Formatter(
-        fmt=(
-            "%(asctime)s %(levelname)s %(name)s "
-            "[trace_id=%(trace_id)s run_id=%(run_id)s step=%(step)s] %(message)s"
-        ),
-        datefmt="%Y-%m-%d %H:%M:%S",
+        fmt="%(asctime)s %(levelname).1s [%(trace_id).8s] [%(step)s] %(name)s - %(message)s",
+        datefmt="%H:%M:%S",
     )
 
 
@@ -146,6 +285,10 @@ def configure_logging(
 ) -> None:
     """初始化统一 logging，默认使用 INFO 级别。"""
     _install_log_record_factory()
+    
+    # 注册默认 Tracing 处理器
+    add_trace_processor(LoggingTraceProcessor())
+    
     root = logging.getLogger()
     
     target_level = _normalize_level(level)
@@ -186,9 +329,13 @@ def configure_logging(
                 markup=False,
                 show_path=False,
                 log_time_format="[%X]",
+                console=None,  # Rich 默认使用 stderr，但我们显式指定
             )
+            from rich.console import Console
+            console_handler.console = Console(stderr=True)
             console_handler.setFormatter(_build_formatter(for_rich=True))
         else:
+            # 显式使用 sys.stderr，避免被 executor 的 redirect_stdout 捕获
             console_handler = logging.StreamHandler(sys.stderr)
             console_handler.setFormatter(_build_formatter(with_color=False))
             

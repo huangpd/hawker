@@ -6,14 +6,19 @@ from pathlib import Path
 
 from hawker_agent.config import Settings
 from hawker_agent.observability import (
+    Span,
+    TraceProcessor,
+    add_trace_processor,
     bind_log_context,
     clear_log_context,
     collect_observations,
     configure_logging,
     emit_observation,
     generate_trace_id,
+    get_current_span,
     get_log_context,
     set_log_context,
+    trace,
 )
 from hawker_agent.storage.logger import init_run_dir
 
@@ -70,14 +75,14 @@ class TestLoggingIntegration:
     def test_configure_logging_writes_file(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
         log_path = tmp_path / "app.log"
         configure_logging(log_path=log_path, force=True)
-        set_log_context(trace_id="trace-file", run_id="run-file", step=5)
+        set_log_context(trace_id="trace-file-full-id", run_id="run-file", step=5)
 
         logging.getLogger("hawker_agent.file").info("written")
 
         content = log_path.read_text(encoding="utf-8")
-        assert "trace_id=trace-file" in content
-        assert "run_id=run-file" in content
-        assert "step=5" in content
+        # 匹配前 8 位 ID
+        assert "[trace-fi]" in content
+        assert "[5]" in content
         assert "written" in content
 
     def test_emit_observation_prints_without_sink(
@@ -136,3 +141,53 @@ class TestLoggingIntegration:
         assert (run_dir / "app.log").exists()
         assert get_log_context().trace_id == "trace-fixed-id-1234567890abcdef"
         assert get_log_context().run_id == "run-fixed-id"
+
+class TestTracing:
+    def teardown_method(self) -> None:
+        clear_log_context()
+
+    def test_trace_creates_hierarchical_spans(self) -> None:
+        with trace("root") as root_span:
+            assert root_span.name == "root"
+            assert root_span.parent_id is None
+            assert get_current_span() == root_span
+            
+            with trace("child") as child_span:
+                assert child_span.name == "child"
+                assert child_span.parent_id == root_span.span_id
+                assert child_span.trace_id == root_span.trace_id
+                assert get_current_span() == child_span
+            
+            assert get_current_span() == root_span
+        
+        assert get_current_span() is None
+
+    def test_trace_captures_exceptions(self) -> None:
+        span_ref = None
+        try:
+            with trace("error_task") as span:
+                span_ref = span
+                raise ValueError("something went wrong")
+        except ValueError:
+            pass
+        
+        assert span_ref is not None
+        assert span_ref.status == "error"
+        assert span_ref.data["error"] == "something went wrong"
+        assert span_ref.data["error_type"] == "ValueError"
+
+    def test_trace_processor_integration(self) -> None:
+        class MockProc:
+            def __init__(self):
+                self.spans = []
+            def on_span_start(self, span): pass
+            def on_span_end(self, span):
+                self.spans.append(span)
+        
+        proc = MockProc()
+        add_trace_processor(proc)
+        
+        with trace("monitored"):
+            pass
+            
+        assert any(s.name == "monitored" for s in proc.spans)

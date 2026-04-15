@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from hawker_agent.browser import actions
 from hawker_agent.browser.actions import DomActionResult
@@ -136,7 +136,7 @@ def register_browser_tools(
         return summary.startswith("[失败]")
 
     async def nav(url: str, mode: str = "auto") -> str:
-        """导航到URL。默认 `mode=auto`，系统会优先选择轻量 `summary`。"""
+        """导航到 URL，返回摘要字符串；页面上下文会写入下一轮 DOM Workspace。"""
         effective_mode = _resolve_mode("nav", mode)
         result = await actions.nav(
             session,
@@ -147,7 +147,7 @@ def register_browser_tools(
         return _handle_dom_result(result)
 
     async def dom_state(mode: str = "auto") -> str:
-        """获取当前页面状态。默认 `mode=auto`，系统会在 `diff/full` 之间自动选择。"""
+        """获取页面状态摘要；页面上下文会写入下一轮 DOM Workspace。"""
         effective_mode = _resolve_mode("dom_state", mode)
         result = await actions.dom_state(
             session,
@@ -157,7 +157,7 @@ def register_browser_tools(
         return _handle_dom_result(result)
 
     async def nav_search(query: str, engine: str = "duckduckgo", mode: str = "auto") -> str:
-        """搜索引擎搜索。默认 `mode=auto`，系统会优先选择轻量 `summary`。"""
+        """执行搜索并返回摘要字符串；结果页上下文会写入下一轮 DOM Workspace。"""
         effective_mode = _resolve_mode("nav_search", mode)
         result = await actions.nav_search(
             session,
@@ -168,12 +168,21 @@ def register_browser_tools(
         )
         return _handle_dom_result(result)
 
-    async def js(code: str) -> str:
-        """在当前页面执行JavaScript，返回完整结果，并自动打印摘要"""
+    async def js(code: str) -> Any:
+        """在当前页面执行 JavaScript,返回值会自动转换为 Python 类型（如 JS 的 Array 变为 Python List）,无需在 JS 中使用 JSON.stringify
+        
+        注意：
+        1. 必须使用 `await js(...)` 调用。
+        2. 返回值会自动转换为 Python 类型（如 JS 的 Array 变为 Python List）。
+        3. 直接返回所需数据即可，无需在 JS 中使用 JSON.stringify。
+        
+        用法示例:
+            items = await js("Array.from(document.querySelectorAll('a')).map(a => a.href)")
+        """
         return await actions.js(session, code)
 
     async def click(selector: str, index: int = 0, mode: str = "auto") -> str:
-        """点击页面元素。默认 `mode=auto`，系统会优先使用 `diff`，失败时自动补诊断。"""
+        """点击元素并返回摘要字符串；页面变化上下文会写入下一轮 DOM Workspace。"""
         effective_mode = _resolve_mode("click", mode)
         result = await actions.click(
             session,
@@ -195,7 +204,7 @@ def register_browser_tools(
         return summary
 
     async def click_index(index: int, mode: str = "auto") -> str:
-        """通过 DOM 索引点击元素。默认 `mode=auto`，系统会优先使用 `diff`，失败时自动补诊断。"""
+        """按 DOM 索引点击元素并返回摘要字符串；页面变化上下文会写入下一轮 DOM Workspace。"""
         effective_mode = _resolve_mode("click_index", mode)
         result = await actions.click_index(
             session,
@@ -227,11 +236,11 @@ def register_browser_tools(
         # 2. 调用通用下载引擎（自动注入 run_dir 已在 namespace 层处理，此处透传 kwargs）
         return await http_tools.download_file(url, filename, cookies=cookies, **kwargs)  # type: ignore
 
-    async def get_network_log(filter: str = "", only_new: bool = False) -> list:
-        """读取页面拦截到的 Fetch/XHR 网络请求日志。返回 list """
+    async def get_network_log(filter: str = "", only_new: bool = False) -> list[dict[str, Any]]:
+        """读取页面拦截到的 Fetch/XHR 网络请求日志。"""
         return await actions.get_network_log(session, filter, only_new)
 
-    async def get_cookies() -> list[dict]:
+    async def get_cookies() -> list[dict[str, Any]]:
         """
         获取当前浏览器会话的所有 Cookie
         适用于：当你需要使用 http_json() 或 http_request() 发送请求，且需要继承浏览器的登录状态时。
@@ -242,7 +251,7 @@ def register_browser_tools(
         """
         return await actions.get_cookies(session)
 
-    async def get_selector_from_index(index: int) -> dict:
+    async def get_selector_from_index(index: int) -> dict[str, Any]:
         """
         通过 DOM 索引 [i_*] 获取该元素的严谨 CSS 选择器及访问路径
         返回: {"selector": str, "shadow_path": list, "js_snippet": str}

@@ -22,6 +22,7 @@ from hawker_agent.tools.data_tools import (
     summarize_json,
     register_data_tools,
 )
+from hawker_agent.tools.http_tools import http_json, http_request
 from hawker_agent.tools.registry import ToolRegistry
 
 
@@ -230,6 +231,7 @@ def test_save_result_json_does_not_delete_result_when_checkpoint_has_same_name(t
     )
 
     assert result_path.exists()
+    assert result_path.parent.name == "result"
     data = json_mod.loads(result_path.read_text(encoding="utf-8"))
     assert data["items_count"] == 1
 
@@ -256,3 +258,73 @@ def test_save_llm_io_json_serializes_complex_payload(tmp_path: Path) -> None:
     assert data["task"] == "测试任务"
     assert data["steps"] == 1
     assert data["records"][0]["llm_response"]["raw"]["value"] == "ok"
+
+
+class TestHttpTools:
+    @pytest.mark.asyncio
+    async def test_http_request_uses_httpx_style_json_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict[str, object] = {}
+
+        class DummyResponse:
+            status_code = 200
+            text = '{"ok": true}'
+            headers = {"Content-Type": "application/json"}
+
+        class DummyClient:
+            async def request(self, method: str, url: str, **kwargs: object) -> DummyResponse:
+                captured["method"] = method
+                captured["url"] = url
+                captured.update(kwargs)
+                return DummyResponse()
+
+        monkeypatch.setattr("hawker_agent.tools.http_tools._get_client", lambda: DummyClient())
+
+        raw = await http_request(
+            "https://example.com/api",
+            method="POST",
+            headers={"x-test": "1"},
+            json={"page": 1},
+        )
+
+        assert raw.startswith("[200]\n")
+        assert captured["method"] == "POST"
+        assert captured["json"] == {"page": 1}
+        assert captured["data"] is None
+        assert captured["content"] is None
+
+    @pytest.mark.asyncio
+    async def test_http_json_accepts_legacy_body_alias(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict[str, object] = {}
+
+        class DummyResponse:
+            status_code = 200
+            text = '{"items": [1]}'
+            headers = {"Content-Type": "application/json"}
+
+        class DummyClient:
+            async def request(self, method: str, url: str, **kwargs: object) -> DummyResponse:
+                captured.update(kwargs)
+                return DummyResponse()
+
+        monkeypatch.setattr("hawker_agent.tools.http_tools._get_client", lambda: DummyClient())
+
+        data = await http_json(
+            "https://example.com/api",
+            method="POST",
+            body='{"page": 1}',
+        )
+
+        assert data == {"items": [1]}
+        assert captured["content"] == '{"page": 1}'
+
+    @pytest.mark.asyncio
+    async def test_http_request_rejects_ambiguous_payload(self) -> None:
+        raw = await http_request(
+            "https://example.com/api",
+            method="POST",
+            json={"page": 1},
+            data={"page": 1},
+        )
+
+        assert raw.startswith("[错误]")
+        assert "json/data/content/body" in raw

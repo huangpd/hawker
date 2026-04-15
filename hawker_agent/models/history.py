@@ -100,6 +100,7 @@ class CodeAgentHistoryList:
         _max_lessons (int): 最大经验教训存储数量。
         _runtime_snapshot (str): 当前运行时快照文本。
         _namespace_snapshot (str): 命名空间快照文本。
+        _memory_workspace (list[str]): 召回到的站点经验和策略记忆。
         _dom_workspace (DOMWorkspaceEntry | None): 增量 DOM 工作区。
         _milestones (list[MemoryNote]): 存储的里程碑。
         _lessons (list[MemoryNote]): 存储的经验教训。
@@ -117,6 +118,7 @@ class CodeAgentHistoryList:
     _max_lessons: int = 8
     _runtime_snapshot: str = ""
     _namespace_snapshot: str = ""
+    _memory_workspace: list[str] = field(default_factory=list)
     _dom_workspace: DOMWorkspaceEntry | None = None
     _milestones: list[MemoryNote] = field(default_factory=list)
     _lessons: list[MemoryNote] = field(default_factory=list)
@@ -205,6 +207,18 @@ class CodeAgentHistoryList:
             ttl=ttl_map[mode],
         )
 
+    def set_memory_workspace(self, entries: list[str]) -> None:
+        """设置当前任务的 Memory Workspace 条目。"""
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for entry in entries:
+            text = entry.strip()
+            if not text or text in seen:
+                continue
+            cleaned.append(text)
+            seen.add(text)
+        self._memory_workspace = cleaned[:6]
+
     # -- 读取（供 LLM 调用） --
 
     def to_prompt_messages(self) -> list[dict]:
@@ -247,6 +261,7 @@ class CodeAgentHistoryList:
                     "milestones": [note.render() for note in self._milestones],
                     "long_term_memory": [note.render() for note in self._lessons],
                     "namespace_snapshot": self._namespace_snapshot or "无持久化变量。",
+                    "memory_workspace": list(self._memory_workspace),
                     "dom_workspace": self._dom_workspace.render() if self._dom_workspace else "暂无页面增量上下文。",
                 },
             }
@@ -383,6 +398,8 @@ class CodeAgentHistoryList:
         lesson_lines = [note.render() for note in self._lessons] or ["- 暂无失败经验"]
         milestones_text = "\n".join(milestone_lines)
         lessons_text = "\n".join(lesson_lines)
+        memory_lines = self._memory_workspace or ["- 暂无站点经验记忆"]
+        memory_text = "\n".join(memory_lines)
         dom_workspace_text = self._dom_workspace.render() if self._dom_workspace else "暂无页面增量上下文。"
         return (
             "[Notebook Workspace]\n"
@@ -395,6 +412,8 @@ class CodeAgentHistoryList:
             f"{lessons_text}\n\n"
             "[Namespace Snapshot]\n"
             f"{self._namespace_snapshot or '无持久化变量。'}\n\n"
+            "[Memory Workspace]\n"
+            f"{memory_text}\n\n"
             "[DOM Workspace]\n"
             f"{dom_workspace_text}\n\n"
             "[STM Policy]\n"
@@ -513,6 +532,13 @@ class CodeAgentHistoryList:
             notes.append(note)
         if len(notes) > max_size:
             del notes[:-max_size]
+
+    def export_memory_notes(self) -> dict[str, list[MemoryNote]]:
+        """导出当前任务沉淀出的里程碑和经验教训。"""
+        return {
+            "milestones": list(self._milestones),
+            "lessons": list(self._lessons),
+        }
 
     def __len__(self) -> int:
         """获取永久消息列表的长度。

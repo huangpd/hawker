@@ -73,12 +73,11 @@ uv run python -m hawker_agent.cli "采集 GitHub Trending 数据" --max-steps 15
 
 ## 📂 观测与产物 (Artifacts)
 
-每次运行产生的 `run_id` 都会在 `crawler_agent/` 下拥有独立空间：
+每次运行产生的 `run_id` 都会拆分为两类目录：
 
-- **`run.ipynb`**: 交互式复盘文档。完美还原 Agent 每一秒的思考与动作。
-- **`result.json`**: 最终提交的结构化结果。
-- **`app.log`**: 带有 `trace_id` 的彩色全链路日志。
-- **归档文件**: 浏览器下载的 PDF 或数据表会自动出现在该文件夹内。
+- **用户交付结果**: `hawker_file/{run_id}/result/result.json`
+- **工程调试产物**: `hawker_file/{run_id}/run.ipynb`、`hawker_file/{run_id}/llm_io.json`、`log/{run_id}/app.log`、`log/{run_id}/run.log`
+- **归档文件**: 浏览器下载的 PDF 或数据表会自动出现在 `hawker_file/{run_id}/` 下。
 
 ---
 

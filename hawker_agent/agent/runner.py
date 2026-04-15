@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from pathlib import Path
@@ -14,6 +15,7 @@ from hawker_agent.browser.session import BrowserSession
 from hawker_agent.config import get_settings
 from hawker_agent.llm.client import LLMClient
 from hawker_agent.llm.tokenizer import count_tokens
+from hawker_agent.memory.store import MemoryStore, build_raw_code_memories
 from hawker_agent.models.cell import CodeCell
 from hawker_agent.models.history import CodeAgentHistoryList
 from hawker_agent.models.result import CodeAgentResult
@@ -22,9 +24,51 @@ from hawker_agent.models.step import CodeAgentStepMetadata
 from hawker_agent.observability import trace, ToolStatsProcessor, add_trace_processor
 from hawker_agent.storage.exporter import export_notebook, save_llm_io_json, save_result_json
 from hawker_agent.storage.logger import init_run_dir, log_step, log_summary
+from hawker_agent.tools.data_tools import normalize_items
 from hawker_agent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
+
+
+def _build_memory_workspace_entries(matches: list) -> list[str]:
+    """构建注入给模型的 Memory Workspace 条目。
+
+    对 raw_* 记忆附带 detail 片段，帮助模型直接复用可执行上下文。
+    """
+    entries: list[str] = []
+    for match in matches:
+        rendered = match.render()
+        entries.append(rendered)
+
+        memory_type = getattr(match.entry, "memory_type", "")
+        detail = str(getattr(match.entry, "detail", "") or "").strip()
+        if not memory_type.startswith("raw_") or not detail:
+            continue
+
+        # 控制 token：每条 detail 限长，避免 Memory Workspace 膨胀。
+        detail_snippet = detail[:1500]
+        if len(detail) > 1500:
+            detail_snippet += "\n... [detail 已截断]"
+        entries.append(f"{rendered}\n[Memory Detail]\n{detail_snippet}")
+    return entries[:6]
+
+
+def _recover_items_from_final_answer(answer: str) -> list[dict]:
+    """从 final_answer 文本中兜底恢复结构化 items。"""
+    text = answer.strip()
+    if not text:
+        return []
+
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return []
+
+    if isinstance(parsed, dict) and isinstance(parsed.get("items"), list):
+        return normalize_items(parsed["items"])
+    if isinstance(parsed, (list, dict)):
+        return normalize_items(parsed)
+    return []
 
 
 def _inject_reflection_prompts(
@@ -114,6 +158,16 @@ def _build_result(
     total_duration = time.time() - state.started_at
     final_answer = state.answer
 
+    if not state.items and final_answer:
+        recovered_items = _recover_items_from_final_answer(final_answer)
+        if recovered_items:
+            added, skipped = state.items.append(recovered_items)
+            logger.warning(
+                "final_answer 未显式 append_items，已自动回填 %d 条数据 (skipped=%d)",
+                added,
+                skipped,
+            )
+
     # 结果恢复逻辑（当任务非正常结束时生成总结）
     if stop_reason != "done" and not final_answer:
         parts = [f"停止原因: {stop_reason}。执行了 {total_steps} 步。"]
@@ -195,8 +249,9 @@ async def run(
     cfg = get_settings()
     state = CodeAgentState()
     # 初始化运行目录和日志
-    run_dir, log_path = init_run_dir(task, cfg, run_id=state.run_id, trace_id=state.trace_id)
+    run_dir, log_dir, log_path = init_run_dir(task, cfg, run_id=state.run_id, trace_id=state.trace_id)
     state.run_dir = run_dir
+    state.log_dir = log_dir
 
     with trace("agent_run", task=task, run_id=state.run_id):
         # 注册工具统计处理器
@@ -205,6 +260,7 @@ async def run(
 
         # 初始化组件
         llm = LLMClient(cfg)
+        memory_store = MemoryStore(cfg.memory_db_path)
         reg = registry or ToolRegistry()
     
         # 加载指令 (默认指令 + 用户自定义)
@@ -225,6 +281,29 @@ async def run(
         )
         # 为 history 注入 token 计数函数
         history._count_tokens_fn = lambda msgs: count_tokens(msgs, cfg.model_name)
+
+        recalled_memories = memory_store.search(task, limit=5)
+        if recalled_memories:
+            history.set_memory_workspace(_build_memory_workspace_entries(recalled_memories))
+            logger.info("启动时命中 %d 条站点记忆", len(recalled_memories))
+            for idx, match in enumerate(recalled_memories, start=1):
+                logger.info(
+                    "记忆召回 #%d: site=%s score=%.1f negative=%s summary=%s",
+                    idx,
+                    match.entry.site_key,
+                    match.score,
+                    match.entry.negative,
+                    match.entry.summary,
+                )
+            top_match = recalled_memories[0]
+            if top_match.score >= 130:
+                state.memory_guided_dom_steps_remaining = 2
+                state.memory_guided_reason = top_match.entry.summary
+                logger.info(
+                    "启用记忆引导DOM护栏: 前 %d 步压制主动 full DOM | reason=%s",
+                    state.memory_guided_dom_steps_remaining,
+                    state.memory_guided_reason,
+                )
 
         cells: list[CodeCell] = []
         no_progress_steps = 0
@@ -257,6 +336,27 @@ async def run(
             # 构建代码执行命名空间
             system_dict = build_namespace(state, reg.as_namespace_dict(), str(run_dir))
             namespace = HawkerNamespace(system_dict, str(run_dir))
+
+            async def _finish(stop_reason: Literal["done", "token_budget", "no_progress", "max_steps"], step: int) -> CodeAgentResult:
+                try:
+                    entries = build_raw_code_memories(task, state)
+                    saved = memory_store.upsert_entries(entries)
+                    if saved:
+                        logger.info("本次运行写入/更新 %d 条记忆", len(saved))
+                        for idx, entry in enumerate(saved, start=1):
+                            logger.info(
+                                "记忆写回 #%d: site=%s intent=%s type=%s negative=%s step=%d summary=%s",
+                                idx,
+                                entry.site_key,
+                                entry.task_intent,
+                                entry.memory_type,
+                                entry.negative,
+                                entry.source_step,
+                                entry.summary,
+                            )
+                except Exception as exc:
+                    logger.warning("记忆总结失败，已跳过写入: %s", exc)
+                return _build_result(state, cells, stop_reason, step, log_path, task, cfg.model_name, namespace)
 
             for step in range(1, max_steps + 1):
                 with trace(f"agent_step_{step}", step=step):
@@ -346,6 +446,12 @@ async def run(
                     else:
                         no_progress_steps += 1
                     state.no_progress_streak = no_progress_steps
+                    if state.memory_guided_dom_steps_remaining > 0:
+                        state.memory_guided_dom_steps_remaining -= 1
+                        logger.info(
+                            "记忆引导DOM护栏剩余步数: %d",
+                            state.memory_guided_dom_steps_remaining,
+                        )
 
                     # 7. 固化 CodeCell 并记录日志
                     cell = step_meta.to_cell(model_output, state.token_stats, len(state.items))
@@ -402,17 +508,17 @@ async def run(
                     # 10. 终止判断
                     if state.done:
                         logger.info(stats_proc.get_summary())
-                        return _build_result(state, cells, "done", step, log_path, task, cfg.model_name, namespace)
+                        return await _finish("done", step)
                     
                     if state.is_over_budget(cfg.max_total_tokens):
                         logger.warning("Step %d: Token 预算耗尽", step)
                         logger.info(stats_proc.get_summary())
-                        return _build_result(state, cells, "token_budget", step, log_path, task, cfg.model_name, namespace)
+                        return await _finish("token_budget", step)
                     
                     if no_progress_steps >= cfg.max_no_progress_steps:
                         logger.warning("Step %d: 连续 %d 步无进展，终止运行", step, no_progress_steps)
                         logger.info(stats_proc.get_summary())
-                        return _build_result(state, cells, "no_progress", step, log_path, task, cfg.model_name, namespace)
+                        return await _finish("no_progress", step)
                     
                     # 接近上限警告（迁移自 main.py 逻辑）
                     remaining_steps = max_steps - step
@@ -427,4 +533,4 @@ async def run(
             # 步数上限
             logger.warning("任务在达到最大步数 (%d) 后终止", max_steps)
             logger.info(stats_proc.get_summary())
-            return _build_result(state, cells, "max_steps", max_steps, log_path, task, cfg.model_name, namespace)
+            return await _finish("max_steps", max_steps)

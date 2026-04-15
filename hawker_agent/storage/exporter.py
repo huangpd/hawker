@@ -138,7 +138,9 @@ def save_result_json(
     Returns:
         Path: 生成的 result.json 文件路径。
     """
-    path = run_dir / "result.json"
+    result_dir = run_dir / "result"
+    result_dir.mkdir(parents=True, exist_ok=True)
+    path = result_dir / "result.json"
 
     summary = answer
     if len(answer) > 2000:
@@ -153,7 +155,7 @@ def save_result_json(
         json.dump(data, f, ensure_ascii=False, indent=2)
     logger.info("结果已保存: %s (%d 条数据)", path, len(items))
 
-    # result.json 已包含完整数据，清理 checkpoint 文件
+    # 正式 result.json 已包含完整数据，清理 run_dir 根目录下的 checkpoint 文件
     for fname in checkpoint_files or set():
         ckpt = run_dir / fname
         if ckpt.resolve() == path.resolve():

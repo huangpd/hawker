@@ -53,11 +53,11 @@ def main(
         if result.run_dir:
             console.print(f"\n📁 运行产物保存至: [underline]{result.run_dir}[/underline]")
             if result.notebook_path:
-                console.print(f"📓 Notebook: {result.notebook_path.name}")
+                console.print(f"📓 Notebook: {result.notebook_path.relative_to(result.run_dir)}")
             if result.result_json_path:
-                console.print(f"📊 JSON 结果: {result.result_json_path.name}")
+                console.print(f"📊 JSON 结果: {result.result_json_path.relative_to(result.run_dir)}")
             if result.llm_io_path:
-                console.print(f"🧠 LLM I/O: {result.llm_io_path.name}")
+                console.print(f"🧠 LLM I/O: {result.llm_io_path.relative_to(result.run_dir)}")
 
     except KeyboardInterrupt:
         console.print("\n[yellow]用户中断运行。[/yellow]")

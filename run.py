@@ -16,15 +16,6 @@ from rich.spinner import Spinner
 # 📝 在这里编写你的任务描述 (支持多行)
 # =================================================================
 
-TASK="""
-1.打开 https://github.com/trending
-2.获取当前页面的项目URL、start、fork、today_start
-提取字段: 
-- URL: 项目链接 
-- start: start数 
-- fork： fork数
-- today_start: today_start数
-"""
 
 
 TASK="""
@@ -50,15 +41,6 @@ TASK="""
 步骤2: 点击"下一页"，获取3页数据
 步骤3: 获取列表页URL和title 
 """
-TASK="""
-1.打开 https://github.com/trending
-2.获取当前页面的项目URL、start、fork、today_start，获取第一页直接返回
-提取字段: 
-- URL: 项目链接 
-- start: start数 
-- fork： fork数
-- today_start: today_start数
-"""
 
 
 TASK="""
@@ -77,8 +59,27 @@ TASK="""
 - employees: "员工数量（如有）"
 - summary: "公司简介（2-3句话）"
 """
+
+
 TASK="""
-1.获取content里提到的的论文下载链接，摘要，研究领域,返回json
+步骤1: 打开 https://www.ahnews.com.cn/df/hss/pc/lay/node_525.html,点击"下一页"，获取3页数据,获取列表页URL和title 
+"""
+TASK="""
+1.打开 https://github.com/trending
+2.获取当前页面的项目URL、start、fork、today_start，获取第一页直接返回
+提取字段: 
+- URL: 项目链接 
+- start: start数 
+- fork： fork数
+- today_start: today_start数
+"""
+TASK="""
+步骤1: 打开网址 https://mcp.aibase.com/zh/explore 
+步骤2: 找到下一页按钮，获取前10页数据 ，分类点击 "搜索工具",认证状态点击“不限”，编程语言是“python”，类型 “MCP Server”，点击按“按下载量”排序
+步骤3:提取所有项目名称、简介、url
+"""
+TASK="""
+1.获取content里提到的的论文下载链接（缺少部分应该网络搜索补全），摘要，研究领域,返回json
 content='''
 [86] Lutfi Eren Erdogan, Hiroki Furuta, Sehoon Kim, Nicholas Lee, Suhong Moon, Gopala Anumanchipalli, Kurt Keutzer, and Amir Gholami. Plan-and-Act: Improving planning of agents
 for long-horizon tasks. In Forty-second International Conference on Machine Learning, 2025.
@@ -100,15 +101,16 @@ Ye, Yingqiang Ge, and Yongfeng Zhang. Aios: Llm agent operating system. arXiv pr
 arXiv:2403.16971, 2024.
 '''
 """
+TASK="""
+1.打开 https://github.com/trending
+2.获取当前页面的项目URL、start、fork、today_start
+提取字段: 
+- URL: 项目链接 
+- start: start数 
+- fork： fork数
+- today_start: today_start数
+"""
 
-TASK="""
-步骤1: 打开网址 https://mcp.aibase.com/zh/explore 
-步骤2: 找到下一页按钮，获取前10页数据 ，分类点击 "搜索工具",认证状态点击“不限”，编程语言是“python”，类型 “MCP Server”，点击按“按下载量”排序
-步骤3:提取所有项目名称、简介、url
-"""
-TASK="""
-步骤1: 打开 https://www.ahnews.com.cn/df/hss/pc/lay/node_525.html,点击"下一页"，获取3页数据,获取列表页URL和title 
-"""
 # =================================================================
 
 async def main():

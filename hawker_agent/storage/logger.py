@@ -18,10 +18,12 @@ def init_run_dir(
     *,
     run_id: str | None = None,
     trace_id: str | None = None,
-) -> tuple[Path, Path]:
+) -> tuple[Path, Path, Path]:
     """初始化任务运行目录及日志配置。
 
-    创建唯一的运行目录，初始化应用日志，并生成运行摘要文件的头部信息。
+    实现日志与产物的分流：
+    - 产物目录 (run_dir): {scrape_dir}/{run_id}，存放 notebook、llm_io 及下载文件；result.json 存放在 run_dir/result/。
+    - 日志目录 (log_dir): log/{run_id}，存放 app.log, run.log。
 
     Args:
         task (str): 任务描述文本。
@@ -30,21 +32,26 @@ def init_run_dir(
         trace_id (str | None, optional): 追踪 ID，若不提供则自动生成。
 
     Returns:
-        tuple[Path, Path]: 包含 (运行目录路径, 运行日志文件路径) 的元组。
+        tuple[Path, Path, Path]: 包含 (运行产物目录, 日志存放目录, 运行日志文件路径) 的元组。
     """
     resolved_run_id = run_id or uuid.uuid4().hex[:12]
     resolved_trace_id = trace_id or generate_trace_id()
+    
+    # 1. 产物目录 (数据仓库)
     run_dir = cfg.scrape_dir / resolved_run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     
+    # 2. 日志目录 (系统行为)
+    log_dir = Path("log") / resolved_run_id
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
     # 统一配置系统日志（app.log 会包含 trace_id）
-    # 注意：这里的 level 应该从配置读取，默认 INFO
-    configure_logging(level="INFO", log_path=run_dir / "app.log")
+    configure_logging(level="INFO", log_path=log_dir / "app.log")
     
     # 初始化业务追踪上下文
     set_log_context(trace_id=resolved_trace_id, run_id=resolved_run_id)
     
-    log_path = run_dir / "run.log"
+    log_path = log_dir / "run.log"
     with open(log_path, "w", encoding="utf-8") as f:
         f.write(f"Run ID: {resolved_run_id}\n")
         f.write(f"Trace ID: {resolved_trace_id}\n")
@@ -55,8 +62,8 @@ def init_run_dir(
         f.write("\nTask:\n")
         f.write(task.strip() + "\n")
     
-    logger.info("✅ 运行目录就绪: %s [trace_id=%s]", run_dir, resolved_trace_id)
-    return run_dir, log_path
+    logger.info("✅ 运行目录就绪 | 产物: %s | 日志: %s", run_dir, log_dir)
+    return run_dir, log_dir, log_path
 
 
 def log_step(

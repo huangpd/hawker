@@ -20,6 +20,7 @@ class Settings(BaseSettings):
         max_no_progress_steps (int): 停止前允许的最大无进展步数。默认为 10。
         message_compression_tokens (int): 触发消息压缩的 token 阈值。默认为 12,000。
         scrape_dir (Path): 存储抓取数据的目录。默认为 "crawler_agent"。
+        memory_db_path (Path): 本地记忆数据库路径。默认为 "memory_db_path/memory.db"。
         headless (bool): 是否以无头模式运行浏览器。默认为 False。
         log_level (str): 日志级别（如 "INFO", "DEBUG"）。默认为 "INFO"。
     """
@@ -42,7 +43,8 @@ class Settings(BaseSettings):
     message_compression_tokens: int = 12_000
 
     # 文件系统
-    scrape_dir: Path = Path("crawler_agent")
+    scrape_dir: Path = Path("hawker_file")
+    memory_db_path: Path = scrape_dir / Path("memory.db")
 
     # 浏览器
     headless: bool = False

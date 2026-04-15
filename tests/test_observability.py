@@ -129,7 +129,7 @@ class TestLoggingIntegration:
             log_level="INFO",
         )
 
-        run_dir, log_path = init_run_dir(
+        run_dir, log_dir, log_path = init_run_dir(
             "demo task",
             cfg,
             run_id="run-fixed-id",
@@ -138,7 +138,7 @@ class TestLoggingIntegration:
 
         assert run_dir.name == "run-fixed-id"
         assert "Trace ID: trace-fixed-id-1234567890abcdef" in log_path.read_text(encoding="utf-8")
-        assert (run_dir / "app.log").exists()
+        assert (log_dir / "app.log").exists()
         assert get_log_context().trace_id == "trace-fixed-id-1234567890abcdef"
         assert get_log_context().run_id == "run-fixed-id"
 

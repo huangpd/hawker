@@ -83,23 +83,44 @@ def register_browser_tools(
             str: 实际使用的模式，仅为 summary、diff、full 之一。
         """
         normalized = (requested_mode or "auto").lower()
-        if normalized in {"summary", "diff", "full"}:
-            return normalized
-
         has_snapshot = _previous_snapshot() is not None
         no_progress_streak = state.no_progress_streak if state is not None else 0
+        memory_guard_active = bool(state and state.memory_guided_dom_steps_remaining > 0)
+
+        def _guard_mode(preferred: str) -> str:
+            if not memory_guard_active:
+                return preferred
+            if preferred != "full":
+                return preferred
+            if action_name in {"nav", "nav_search"}:
+                guarded = "summary"
+            elif action_name == "dom_state":
+                guarded = "diff" if has_snapshot else "summary"
+            else:
+                guarded = "diff" if has_snapshot else "summary"
+            logger.info(
+                "记忆引导DOM护栏生效: action=%s requested=%s -> effective=%s reason=%s",
+                action_name,
+                preferred,
+                guarded,
+                state.memory_guided_reason if state is not None else "",
+            )
+            return guarded
+
+        if normalized in {"summary", "diff", "full"}:
+            return _guard_mode(normalized)
 
         if action_name in {"nav", "nav_search"}:
-            return "summary"
+            return _guard_mode("summary")
         if action_name in {"click", "click_index"}:
             if no_progress_streak >= 2:
-                return "full"
-            return "diff" if has_snapshot else "summary"
+                return _guard_mode("full")
+            return _guard_mode("diff" if has_snapshot else "summary")
         if action_name == "dom_state":
             if no_progress_streak >= 2:
-                return "full"
-            return "diff" if has_snapshot else "full"
-        return "summary"
+                return _guard_mode("full")
+            return _guard_mode("diff" if has_snapshot else "full")
+        return _guard_mode("summary")
 
     def _diagnostic_mode() -> str:
         """

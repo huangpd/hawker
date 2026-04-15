@@ -217,3 +217,59 @@ class TestBrowserToolModes:
         assert "已自动补充 DOM=diff" in result
         assert history.inject_browser_context.call_count == 1
         assert state.last_dom_snapshot == {"title": "旧页", "interactive_count": 2}
+
+    async def test_memory_guard_downgrades_explicit_full_dom_state(self) -> None:
+        registry = ToolRegistry()
+        history = MagicMock()
+        session = MagicMock()
+        state = CodeAgentState(memory_guided_dom_steps_remaining=2, memory_guided_reason="先按记忆低成本验证")
+
+        register_browser_tools(registry, session, history, state)
+        dom_state = registry.as_namespace_dict()["dom_state"]
+
+        async def fake_dom_state(*args, **kwargs):
+            assert kwargs["mode"] == "summary"
+            return DomActionResult(
+                summary="[OK] 页面 | 交互元素 3 | DOM=summary",
+                dom=None,
+                snapshot={"title": "页面", "interactive_count": 3},
+            )
+
+        from hawker_agent.tools import browser_tools as browser_tools_module
+
+        original = browser_tools_module.actions.dom_state
+        browser_tools_module.actions.dom_state = fake_dom_state
+        try:
+            result = await dom_state(mode="full")
+        finally:
+            browser_tools_module.actions.dom_state = original
+
+        assert "DOM=summary" in result
+
+    async def test_memory_guard_downgrades_explicit_full_nav(self) -> None:
+        registry = ToolRegistry()
+        history = MagicMock()
+        session = MagicMock()
+        state = CodeAgentState(memory_guided_dom_steps_remaining=1, memory_guided_reason="该站点优先 SSR 直提")
+
+        register_browser_tools(registry, session, history, state)
+        nav = registry.as_namespace_dict()["nav"]
+
+        async def fake_nav(*args, **kwargs):
+            assert kwargs["mode"] == "summary"
+            return DomActionResult(
+                summary="[OK] 页面 | 交互元素 1 | DOM=summary",
+                dom=None,
+                snapshot={"title": "页面", "interactive_count": 1},
+            )
+
+        from hawker_agent.tools import browser_tools as browser_tools_module
+
+        original = browser_tools_module.actions.nav
+        browser_tools_module.actions.nav = fake_nav
+        try:
+            result = await nav("https://example.com", mode="full")
+        finally:
+            browser_tools_module.actions.nav = original
+
+        assert "DOM=summary" in result

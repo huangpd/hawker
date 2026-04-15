@@ -39,7 +39,7 @@ for i in range(5):
 - **鉴权处理**：如果 API 返回 401，先检查 `get_network_log()` 里的 `headers`，并在调用中完整复刻。或调用 `await get_cookies()` 获取凭证后注入 │
  ```python
 for page in range(1,5):
-    data = http_json(api_url,headers=headers, method="POST", body=json.dumps({{"page": page}}))
+    data = http_json(api_url, headers=headers, method="POST", json={{"page": page}})
     append_items(data["items"])
 ```
 

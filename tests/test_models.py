@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import time
 
 import pytest
@@ -22,6 +23,7 @@ from hawker_agent.models.output import CodeAgentModelOutput
 from hawker_agent.models.result import CodeAgentResult
 from hawker_agent.models.state import CodeAgentState, TokenStats
 from hawker_agent.models.step import CodeAgentStepMetadata
+from hawker_agent.agent.runner import _recover_items_from_final_answer
 
 
 # ─── exceptions ─────────────────────────────────────────────────
@@ -190,6 +192,18 @@ class TestCodeAgentState:
     def test_checkpoint_files_default_empty(self) -> None:
         state = CodeAgentState()
         assert state.checkpoint_files == set()
+
+    def test_recover_items_from_final_answer_list(self) -> None:
+        payload = json.dumps([{"id": 1, "title": "A"}, {"id": 2, "title": "B"}], ensure_ascii=False)
+        items = _recover_items_from_final_answer(payload)
+        assert len(items) == 2
+        assert items[0]["id"] == 1
+
+    def test_recover_items_from_final_answer_items_wrapper(self) -> None:
+        payload = json.dumps({"items": [{"url": "https://a"}, {"url": "https://b"}]}, ensure_ascii=False)
+        items = _recover_items_from_final_answer(payload)
+        assert len(items) == 2
+        assert items[1]["url"] == "https://b"
 
 
 # ─── CodeCell ───────────────────────────────────────────────────
@@ -485,6 +499,32 @@ class TestCodeAgentHistoryList:
         assert "runtime_snapshot" in package["workspace_sections"]
         assert isinstance(package["source_history_messages"], list)
         assert package["messages"][0]["role"] == "system"
+
+    def test_memory_workspace_is_rendered_in_notebook_mode(self) -> None:
+        h = CodeAgentHistoryList.from_task("打开 https://example.com", "系统提示")
+        h.record_step(
+            step=1,
+            max_steps=5,
+            assistant_content="导航\n```python\nawait nav('https://example.com')\n```",
+            observation="[OK] 页面已加载",
+            namespace_view={},
+            items_count=0,
+            total_tokens=100,
+            max_total_tokens=1000,
+            progress=False,
+            had_error=False,
+            no_progress_steps=0,
+        )
+        h.set_memory_workspace(
+            [
+                "- 站点经验: 列表页优先尝试 SSR DOM 提取",
+                "- 失败约束: 不要直接猜排序参数",
+            ]
+        )
+        workspace = h.build_prompt_package()["workspace_message"]["content"]
+        assert "[Memory Workspace]" in workspace
+        assert "列表页优先尝试 SSR DOM 提取" in workspace
+        assert "不要直接猜排序参数" in workspace
 
     def test_compress_stub_passthrough(self) -> None:
         h = CodeAgentHistoryList.from_task("任务", "系统提示")

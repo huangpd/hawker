@@ -138,7 +138,7 @@ async def http_json(
     body: str = "",
     cookies: dict | str = "",
     **kwargs: Any
-) -> object:
+) -> Any:
     """
     发送 HTTP 请求并返回解析后的 JSON 对象。
     - cookies: 可选。支持从 get_cookies() 获取的会话凭证。

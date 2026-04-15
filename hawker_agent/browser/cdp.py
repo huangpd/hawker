@@ -25,8 +25,8 @@ async def get_cdp(session: BrowserSession):
     return cdp
 
 
-async def run_js(session: BrowserSession, expression: str) -> str:
-    """通过 CDP Runtime.evaluate 执行任意 JavaScript 代码，并返回字符串结果。
+async def run_js(session: BrowserSession, expression: str) -> Any:
+    """通过 CDP Runtime.evaluate 执行任意 JavaScript 代码，并返回原生 Python 对象。
 
     支持自动处理 Illegal return statement 异常，通过包裹异步 IIFE 进行重试。
 
@@ -35,7 +35,7 @@ async def run_js(session: BrowserSession, expression: str) -> str:
         expression (str): 要执行的 JavaScript 表达式或代码块。
 
     Returns:
-        str: 执行结果的字符串表示。如果执行出错，返回以 "[JS错误]" 开头的错误描述。
+        Any: 执行结果的原生 Python 对象。如果执行出错，返回以 "[JS错误]" 开头的错误描述。
     """
     clean_expr = expression.strip()
     cdp = await get_cdp(session)
@@ -81,11 +81,4 @@ async def run_js(session: BrowserSession, expression: str) -> str:
             return msg
 
     value = result.get("result", {}).get("value")
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    try:
-        return json.dumps(value, ensure_ascii=False)
-    except (TypeError, ValueError):
-        return str(value)
+    return "" if value is None else value

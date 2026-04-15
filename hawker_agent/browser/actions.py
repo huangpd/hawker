@@ -204,38 +204,35 @@ def _build_dom_action_result(
     )
 
 
-def _log_js_summary(raw: str) -> None:
+def _log_js_summary(data: Any) -> None:
     """记录 JavaScript 执行结果的摘要。
 
     Args:
-        raw (str): JS 执行后的原始结果字符串。
+        data (Any): JS 执行后的原始数据对象。
     """
-    if raw.startswith("[JS错误]"):
-        emit_observation(raw[:200])
+    if isinstance(data, str) and data.startswith("[JS错误]"):
+        emit_observation(data[:200])
         return
-    try:
-        parsed = json.loads(raw)
-        if isinstance(parsed, list):
-            sample = ""
-            sig = ""
-            if parsed:
-                sample = json.dumps(parsed[0], ensure_ascii=False)
-                if len(sample) > 120:
-                    sample = sample[:120] + "..."
-                if isinstance(parsed[0], dict):
-                    sig = get_type_signature(parsed[0])
-            emit_observation(
-                f"[js] 返回 {len(parsed)} 条数据"
-                + (f" | 签名: {sig}" if sig else "")
-                + (f" | 样本: {sample}" if sample else "")
-            )
-        elif isinstance(parsed, dict):
-            emit_observation(f"[js] 返回 dict, {len(parsed)} 个键: {get_type_signature(parsed)}")
-        else:
-            emit_observation(f"[js] 返回: {str(parsed)[:120]}")
-    except (json.JSONDecodeError, ValueError):
-        preview = raw[:120].replace("\n", " ")
-        emit_observation(f"[js] 返回 {len(raw)} 字符: {preview}{'...' if len(raw) > 120 else ''}")
+    
+    if isinstance(data, list):
+        sample = ""
+        sig = ""
+        if data:
+            sample_obj = data[0]
+            sample = json.dumps(sample_obj, ensure_ascii=False)
+            if len(sample) > 120:
+                sample = sample[:120] + "..."
+            if isinstance(sample_obj, dict):
+                sig = get_type_signature(sample_obj)
+        emit_observation(
+            f"[js] 返回 {len(data)} 条数据"
+            + (f" | 签名: {sig}" if sig else "")
+            + (f" | 样本: {sample}" if sample else "")
+        )
+    elif isinstance(data, dict):
+        emit_observation(f"[js] 返回 dict, {len(data)} 个键: {get_type_signature(data)}")
+    else:
+        emit_observation(f"[js] 返回: {str(data)[:120]}")
 
 
 def _build_search_url(query: str, engine: str) -> str | None:
@@ -341,7 +338,7 @@ async def nav_search(
     return await nav(session, url, mode=mode, previous_snapshot=previous_snapshot)
 
 
-async def js(session: BrowserSession, code: str) -> str:
+async def js(session: BrowserSession, code: str) -> Any:
     """在当前页面执行 JavaScript 代码，并返回完整执行结果。
 
     Args:
@@ -349,7 +346,7 @@ async def js(session: BrowserSession, code: str) -> str:
         code (str): 要执行的 JavaScript 代码。
 
     Returns:
-        str: JS 执行后的原始结果字符串。
+        Any: JS 执行后的原生 Python 对象（List, Dict, Str, etc.）。
     """
     raw = await run_js(session, code)
     _log_js_summary(raw)
@@ -563,7 +560,7 @@ async def fill_input(session: BrowserSession, index: int, text: str) -> str:
     return f"[OK] 已在 [i_{index}] 输入 '{masked}' ({len(text)}字符)"
 
 
-async def get_cookies(session: BrowserSession) -> list[dict]:
+async def get_cookies(session: BrowserSession) -> list[dict[str, Any]]:
     """提取当前浏览器会话的所有 Cookie。
 
     采用多级降级策略确保在不同版本的驱动下均能稳定获取。
@@ -572,7 +569,7 @@ async def get_cookies(session: BrowserSession) -> list[dict]:
         session (BrowserSession): 浏览器会话对象。
 
     Returns:
-        list[dict]: 包含所有 Cookie 字典的列表。
+        list[dict[str, Any]]: 包含所有 Cookie 字典的列表。
     """
     # 50年架构师提示：Cookie 是会话的灵魂，必须保证提取的鲁棒性
     playwright_cookies = []
@@ -595,7 +592,7 @@ async def get_network_log(
     session: BrowserSession,
     filter_str: str = "",
     only_new: bool = False,
-) -> list:
+) -> list[dict[str, Any]]:
     """读取页面拦截到的 Fetch/XHR 网络请求日志。
 
     Args:
@@ -604,7 +601,7 @@ async def get_network_log(
         only_new (bool, optional): 是否仅返回自上次读取以来的新请求。默认为 False。
 
     Returns:
-        list: 包含网络请求日志项的列表。
+        list[dict[str, Any]]: 包含网络请求日志项的列表。
     """
     if filter_str:
         safe_filter = _escape_js_string(filter_str)

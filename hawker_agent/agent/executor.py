@@ -163,17 +163,25 @@ async def execute(
 
                             # 核心：在 ALLOW_TOP_LEVEL_AWAIT 模式下，如果代码含 await，
                             # 使用 eval() 执行编译后的代码块可以正确返回协程对象。
-                            # 提示：eval 支持执行以 'exec' 模式编译的代码对象。
+                            # 即使模型忘了写 await，如果返回的是协程，我们也帮它完成。
                             maybe_coro = eval(compiled, view)
 
                             if inspect.isawaitable(maybe_coro):
-                                await maybe_coro
+                                # 情况 A: 显式使用了 top-level await
+                                result = await maybe_coro
+                            else:
+                                # 情况 B: 模型可能忘了写 await，导致返回了一个 coroutine 对象
+                                # 或者代码块最后一行是一个 async 函数调用但没写 await
+                                result = maybe_coro
 
-                            # 3. 同步回 cell_local
+                            # 3. 自动救治：如果最后执行出的 result 仍然是个协程对象，说明调用没完成
+                            if inspect.isawaitable(result):
+                                result = await result
+
+                            # 4. 同步回 cell_local
                             for k, v in view.items():
                                 if k not in namespace.system:
                                     namespace.cell_local[k] = v
-
                     # 4. 提交事务：变量提升
                     namespace.commit()
 

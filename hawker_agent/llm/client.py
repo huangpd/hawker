@@ -163,7 +163,15 @@ class LLMClient:
         """
         self._cfg = cfg or get_settings()
 
-    async def complete(self, messages: list[dict[str, str]]) -> LLMResponse:
+    async def _complete_internal(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        model_name: str | None = None,
+        reasoning_effort: str | None = None,
+        temperature: float | None = None,
+        trace_name: str = "llm_generation",
+    ) -> LLMResponse:
         """异步调用 LLM 生成补全结果。
 
         包含针对 429 (Rate Limit) 的自动重试逻辑。
@@ -177,16 +185,16 @@ class LLMClient:
         Raises:
             LLMError: 当请求失败或重试次数耗尽时抛出。
         """
-        raw_model_name = self._cfg.model_name
+        raw_model_name = model_name or self._cfg.model_name
         model = _normalize_model_name(raw_model_name)
         api_base = _normalize_api_base(self._cfg.openai_base_url)
         current_step = get_log_context().step
 
-        with trace("llm_generation", model=model, as_type="generation", input={"messages": messages}) as span:
+        with trace(trace_name, model=model, as_type="generation", input={"messages": messages}) as span:
             step_context = bind_log_context(step=current_step) if current_step != "-" else bind_log_context()
             with step_context:
                 # LiteLLM 警告: Gemini 3 系列模型 (如 gemini-3-flash-preview) 必须使用 temperature=1.0
-                temperature = 1.0 if "gemini" in model.lower() else 0.7
+                effective_temperature = temperature if temperature is not None else (1.0 if "gemini" in model.lower() else 0.7)
 
                 kwargs: dict = {
                     "model": model,
@@ -194,12 +202,13 @@ class LLMClient:
                     "api_key": self._cfg.openai_api_key,
                     "base_url": api_base,
                     "timeout": 180,
-                    "temperature": temperature,
+                    "temperature": effective_temperature,
                     "max_tokens": 2500,  # 提高上限，降低 finish_reason=length 频率
                 }
                 
-                if self._cfg.reasoning_effort:
-                    kwargs["reasoning_effort"] = self._cfg.reasoning_effort
+                effective_reasoning_effort = self._cfg.reasoning_effort if reasoning_effort is None else reasoning_effort
+                if effective_reasoning_effort:
+                    kwargs["reasoning_effort"] = effective_reasoning_effort
 
                 max_retries = 3
                 retry_delay = 5
@@ -276,3 +285,25 @@ class LLMClient:
                     truncate_reason=truncate_reason,
                     raw=response,
                 )
+
+    async def complete(self, messages: list[dict[str, str]]) -> LLMResponse:
+        """使用主模型完成标准 Agent 推理。"""
+        return await self._complete_internal(messages)
+
+    async def complete_with_model(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        model_name: str,
+        reasoning_effort: str | None = None,
+        temperature: float | None = None,
+        trace_name: str = "llm_generation",
+    ) -> LLMResponse:
+        """使用指定模型完成一次补全，用于旁路任务如 Healing。"""
+        return await self._complete_internal(
+            messages,
+            model_name=model_name,
+            reasoning_effort=reasoning_effort,
+            temperature=temperature,
+            trace_name=trace_name,
+        )

@@ -17,7 +17,7 @@ console = Console()
 @app.command()
 def main(
     task: str = typer.Argument(..., help="描述你要爬取的任务"),
-    max_steps: int = typer.Option(25, "--max-steps", "-s", help="最大允许迭代步数"),
+    max_steps: int | None = typer.Option(None, "--max-steps", "-s", help="最大允许迭代步数；未传时使用 .env 中的 MAX_STEPS"),
 ) -> None:
     """运行 HawkerAgent 爬取任务。"""
     cfg = get_settings()
@@ -28,7 +28,7 @@ def main(
     console.print(Panel(f"[bold blue]任务开始:[/bold blue]\n{task}", title="HawkerAgent", expand=False))
 
     try:
-        result = asyncio.run(run(task, max_steps=max_steps))
+        result = asyncio.run(run(task, max_steps=max_steps or cfg.max_steps))
         
         # 结果输出
         status_color = "green" if result.success else "yellow"

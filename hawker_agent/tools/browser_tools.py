@@ -177,7 +177,7 @@ def register_browser_tools(
         )
         return _handle_dom_result(result)
 
-    async def nav_search(query: str, engine: str = "duckduckgo", mode: str = "summary") -> str:
+    async def nav_search(query: str, engine: str = "google", mode: str = "full") -> str:
         """执行搜索并返回摘要字符串；结果页上下文会写入下一轮 DOM Workspace。"""
         effective_mode = _resolve_mode("nav_search", mode)
         result = await actions.nav_search(

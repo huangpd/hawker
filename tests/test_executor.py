@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import pytest
+from unittest.mock import AsyncMock, patch
 
 from hawker_agent.agent.executor import (
     _clean_traceback,
@@ -165,3 +166,32 @@ class TestExecute:
         assert any(record.trace_id == "trace-exec" for record in caplog.records)
         assert any(record.run_id == "run-exec" for record in caplog.records)
         assert any(record.step == "7" for record in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_healing_retry_can_fix_current_cell(self) -> None:
+        state = CodeAgentState(trace_id="trace-heal", run_id="run-heal")
+        ns = self._make_ns()
+
+        with patch(
+            "hawker_agent.agent.executor.try_heal_code",
+            new=AsyncMock(return_value="safe_items = []\nobserve(str(len(safe_items)))"),
+        ) as mock_heal:
+            result = await execute("observe(str(len(safe_items)))", ns, state=state, step=3)
+
+        assert result == "0"
+        assert mock_heal.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_healing_falls_back_to_original_error_when_no_fix(self) -> None:
+        state = CodeAgentState(trace_id="trace-heal-fail", run_id="run-heal-fail")
+        ns = self._make_ns()
+
+        with patch(
+            "hawker_agent.agent.executor.try_heal_code",
+            new=AsyncMock(return_value=None),
+        ) as mock_heal:
+            result = await execute("observe(str(len(missing_items)))", ns, state=state, step=4)
+
+        assert "[执行错误]" in result
+        assert "NameError" in result
+        assert mock_heal.await_count == 1

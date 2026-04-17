@@ -26,6 +26,8 @@ from hawker_agent.models.step import CodeAgentStepMetadata
 from hawker_agent.agent.runner import (
     _build_namespace_skip_names,
     _recover_items_from_final_answer,
+    _replace_state_items,
+    _resolve_final_delivery_items,
     _validate_final_answer_request,
 )
 from hawker_agent.agent.namespace import HawkerNamespace
@@ -239,6 +241,39 @@ class TestCodeAgentState:
         step_meta = CodeAgentStepMetadata(step_no=3, activity_before=1, progress_before=1)
         reason = _validate_final_answer_request(3, state, step_meta)
         assert reason is None
+
+    def test_resolve_final_delivery_items_prefers_inline_json_items(self) -> None:
+        state = CodeAgentState()
+        state.items.append(
+            [
+                {"title": "A"},
+                {"title": "B"},
+                {"title": "C"},
+                {"title": "D"},
+                {"title": "E"},
+            ]
+        )
+        final_answer = json.dumps(
+            {
+                "completed": True,
+                "items": [
+                    {"title": "A"},
+                    {"title": "B"},
+                    {"title": "C"},
+                    {"title": "D"},
+                ],
+            },
+            ensure_ascii=False,
+        )
+        items = _resolve_final_delivery_items("返回json，提取 title", final_answer, state)
+        assert len(items) == 4
+        assert [item["title"] for item in items] == ["A", "B", "C", "D"]
+
+    def test_replace_state_items_overwrites_runtime_items(self) -> None:
+        state = CodeAgentState()
+        state.items.append([{"title": "stale"}, {"title": "old"}])
+        _replace_state_items(state, [{"title": "new-a"}, {"title": "new-b"}])
+        assert state.items.to_list() == [{"title": "new-a"}, {"title": "new-b"}]
 
     def test_build_namespace_skip_names_uses_system_keys(self) -> None:
         namespace = HawkerNamespace({"nav": object(), "fetch": object(), "json": object()}, "/tmp/run")

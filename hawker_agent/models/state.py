@@ -100,6 +100,8 @@ class CodeAgentState:
     pending_dom: str | None = None
     last_dom_snapshot: dict[str, Any] | None = None
     llm_records: list[dict[str, Any]] = field(default_factory=list)
+    healing_records: list[dict[str, Any]] = field(default_factory=list)
+    evaluator_records: list[dict[str, Any]] = field(default_factory=list)
 
     # Token 预算
     token_stats: TokenStats = field(default_factory=TokenStats)

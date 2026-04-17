@@ -142,11 +142,13 @@ def trace(name: str, **metadata: Any) -> Iterator[Span]:
     span.external_context_manager = obs_ctx
     
     # 兼容现有日志系统：绑定 trace_id 和 step
-    log_ctx_token = _LOG_CONTEXT.set(LogContext(
-        trace_id=trace_id,
-        run_id=get_log_context().run_id,
-        step=name
-    ))
+    log_ctx_token = _LOG_CONTEXT.set(
+        LogContext(
+            trace_id=trace_id,
+            run_id=existing_ctx.run_id,
+            step=existing_ctx.step or name,
+        )
+    )
     
     span_token = _CURRENT_SPAN.set(span)
     

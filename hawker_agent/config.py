@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -68,6 +69,14 @@ class Settings(BaseSettings):
 
     # 日志
     log_level: str = "INFO"
+
+    @model_validator(mode="after")
+    def _sync_paths(self) -> "Settings":
+        """在用户仅覆盖 `scrape_dir` 时，同步默认的 memory.db 位置。"""
+        default_memory_path = Path("hawker_file") / "memory.db"
+        if self.memory_db_path == default_memory_path:
+            self.memory_db_path = self.scrape_dir / "memory.db"
+        return self
 
 
 @lru_cache(maxsize=1)

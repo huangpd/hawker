@@ -27,6 +27,7 @@ from hawker_agent.observability import trace, ToolStatsProcessor, add_trace_proc
 from hawker_agent.storage.exporter import export_notebook, save_llm_io_json, save_result_json
 from hawker_agent.storage.logger import init_run_dir, log_step, log_summary
 from hawker_agent.tools.data_tools import normalize_items
+from hawker_agent.tools.http_tools import close_http_clients
 from hawker_agent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -639,15 +640,15 @@ async def run(
                             }
                         )
 
-                        # 9. 关键节点反思注入
-                        _inject_reflection_prompts(history, step, state, step_meta, max_steps, no_progress_steps)
-
-                        # 10. 终止判断
+                        # 9. 终止判断
                         if state.done:
                             logger.info(stats_proc.get_summary())
                             result = await _finish("done", step)
                             flush_langfuse()
                             return result
+
+                        # 10. 关键节点反思注入
+                        _inject_reflection_prompts(history, step, state, step_meta, max_steps, no_progress_steps)
                         
                         if state.is_over_budget(cfg.max_total_tokens):
                             logger.warning("Step %d: Token 预算耗尽", step)
@@ -681,3 +682,4 @@ async def run(
                 return result
         finally:
             remove_trace_processor(stats_proc)
+            await close_http_clients()

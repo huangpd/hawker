@@ -183,6 +183,14 @@ async def try_heal_code(
                 attempt,
                 change_ratio,
             )
+            state.healing_records.append(
+                {
+                    "attempt": attempt,
+                    "status": "accepted",
+                    "change_ratio": round(change_ratio, 4),
+                    "model": cfg.small_model_name,
+                }
+            )
             return healed_code
 
     logger.info("Healing 放弃: 未找到可接受的局部修复")

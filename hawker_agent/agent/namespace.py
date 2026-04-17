@@ -13,6 +13,7 @@ import urllib
 import urllib.parse
 import urllib.request
 from collections import ChainMap
+from collections.abc import MutableSequence
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
@@ -158,8 +159,26 @@ def _bind_callable_to_state(state: CodeAgentState, fn: Callable) -> Callable:
     return wrapped
 
 
-class ClearableList(list):
-    """同步 .clear() 操作到 ItemStore 的列表包装器。"""
+def _supports_kwarg(fn: Callable, arg_name: str) -> bool:
+    """判断函数是否显式声明某个关键字参数，或接受任意 kwargs。"""
+    try:
+        sig = inspect.signature(inspect.unwrap(fn))
+    except (TypeError, ValueError):
+        return False
+    for param in sig.parameters.values():
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+        if param.name == arg_name:
+            return True
+    return False
+
+
+class ClearableList(MutableSequence):
+    """同步列表写操作到 ItemStore 的可变序列包装器。
+
+    这里不能直接继承 ``list`` 保存一份副本，否则 ``append`` / ``extend`` 等写操作会
+    落到父类副本上，导致运行时看似成功但不会真正写回底层 ItemStore。
+    """
 
     def __init__(self, data: list, store: object):
         """初始化 ClearableList。
@@ -168,9 +187,16 @@ class ClearableList(list):
             data (list): 底层列表数据。
             store (object): 要同步的 ItemStore 对象。
         """
-        super().__init__(data)
         self._data = data
         self._store = store
+
+    def append(self, value: object) -> None:
+        """向底层列表追加一项。"""
+        self._data.append(value)
+
+    def extend(self, values: list[object]) -> None:
+        """向底层列表追加多项。"""
+        self._data.extend(values)
 
     def clear(self) -> None:
         """同时清除列表和同步的 ItemStore。"""
@@ -178,10 +204,27 @@ class ClearableList(list):
         if hasattr(self._store, "clear"):
             self._store.clear()  # type: ignore
 
-    def __getitem__(self, i): return self._data[i]
-    def __iter__(self): return iter(self._data)
-    def __len__(self): return len(self._data)
-    def __repr__(self): return repr(self._data)
+    def insert(self, index: int, value: object) -> None:
+        """在指定位置插入一项。"""
+        self._data.insert(index, value)
+
+    def __getitem__(self, index: int | slice):
+        return self._data[index]
+
+    def __setitem__(self, index: int | slice, value: object) -> None:
+        self._data[index] = value
+
+    def __delitem__(self, index: int | slice) -> None:
+        del self._data[index]
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __repr__(self) -> str:
+        return repr(self._data)
 
 
 def register_core_actions(
@@ -239,17 +282,28 @@ def build_namespace(
         if name == "browser_download":
             # 为这些涉及文件写入的工具自动注入 run_dir 参数
             # 注意：必须使用默认参数绑定 fn_to_call，否则闭包会捕获循环变量的最终值
+            should_inject_run_dir = _supports_kwarg(fn, "run_dir")
             if inspect.iscoroutinefunction(inspect.unwrap(fn)):
                 @functools.wraps(fn)
-                async def wrapped_with_rundir(*args: object, fn_to_call=fn, **kwargs: object) -> object:
-                    if "run_dir" not in kwargs:
+                async def wrapped_with_rundir(
+                    *args: object,
+                    fn_to_call=fn,
+                    inject_run_dir=should_inject_run_dir,
+                    **kwargs: object,
+                ) -> object:
+                    if inject_run_dir and "run_dir" not in kwargs:
                         kwargs["run_dir"] = run_dir
                     return await fn_to_call(*args, **kwargs)
                 sys_dict[name] = _bind_callable_to_state(state, wrapped_with_rundir)
             else:
                 @functools.wraps(fn)
-                def wrapped_with_rundir_sync(*args: object, fn_to_call=fn, **kwargs: object) -> object:
-                    if "run_dir" not in kwargs:
+                def wrapped_with_rundir_sync(
+                    *args: object,
+                    fn_to_call=fn,
+                    inject_run_dir=should_inject_run_dir,
+                    **kwargs: object,
+                ) -> object:
+                    if inject_run_dir and "run_dir" not in kwargs:
                         kwargs["run_dir"] = run_dir
                     return fn_to_call(*args, **kwargs)
                 sys_dict[name] = _bind_callable_to_state(state, wrapped_with_rundir_sync)
@@ -279,6 +333,22 @@ def build_namespace(
     sys_dict["Path"] = Path
 
     return sys_dict
+
+
+def build_system_dict(
+    state: CodeAgentState,
+    tools_dict: dict[str, Callable],
+    run_dir: str,
+) -> dict:
+    """兼容旧测试/调用方的系统命名空间构建入口。"""
+    registry_dict = dict(tools_dict)
+    from hawker_agent.tools.registry import ToolRegistry
+
+    registry = ToolRegistry()
+    for name, fn in registry_dict.items():
+        registry.register(fn, name=name, expose_in_prompt=False)
+    register_core_actions(registry, state, run_dir)
+    return build_namespace(state, registry.as_namespace_dict(), run_dir)
 
 
 def _make_append_items(state: CodeAgentState) -> Callable:

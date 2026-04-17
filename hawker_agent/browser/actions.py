@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+import shutil
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,7 +16,7 @@ from hawker_agent.browser.dom_utils import (
     render_dom_diff,
 )
 from hawker_agent.browser.netlog import ensure_network_monitor
-from hawker_agent.observability import emit_observation
+from hawker_agent.observability import emit_observation, emit_tool_observation
 from hawker_agent.tools.data_tools import get_type_signature
 
 if TYPE_CHECKING:
@@ -336,6 +337,76 @@ async def nav_search(
             summary=f"[错误] 不支持的搜索引擎: {engine}，可用: duckduckgo, google, bing"
         )
     return await nav(session, url, mode=mode, previous_snapshot=previous_snapshot)
+
+
+async def browser_download(
+    session: BrowserSession,
+    url: str,
+    filename: str | None = None,
+    run_dir: str | None = None,
+    timeout_s: float = 30.0,
+) -> str:
+    """使用浏览器原生下载能力下载文件，并等待文件落地。
+
+    Args:
+        session (BrowserSession): 浏览器会话对象。
+        url (str): 下载链接。
+        filename (str | None): 期望保存的文件名。
+        run_dir (str | None): 目标目录；若提供则下载完成后立即归档到该目录。
+        timeout_s (float): 最长等待下载完成时间。
+
+    Returns:
+        str: 下载结果摘要。
+    """
+    before = set(getattr(session.raw, "downloaded_files", []) or [])
+    cdp = await get_cdp(session)
+
+    try:
+        await cdp.cdp_client.send.Page.navigate(
+            params={"url": url},
+            session_id=cdp.session_id,
+        )
+    except Exception:
+        await session.raw.navigate_to(url)
+
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    downloaded_path: Path | None = None
+    while asyncio.get_running_loop().time() < deadline:
+        current = list(getattr(session.raw, "downloaded_files", []) or [])
+        candidates = [Path(p) for p in current if p not in before]
+        for candidate in candidates:
+            if candidate.suffix == ".crdownload":
+                continue
+            if candidate.exists() and candidate.is_file() and candidate.stat().st_size > 0:
+                downloaded_path = candidate
+                break
+        if downloaded_path is not None:
+            break
+        await asyncio.sleep(0.25)
+
+    if downloaded_path is None:
+        return f"[失败] 浏览器下载超时: {url}"
+
+    final_path = downloaded_path
+    if run_dir:
+        target_dir = Path(run_dir)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        desired_name = filename or downloaded_path.name
+        desired_name = re.sub(r'[\\/*?:"<>|]', "_", Path(desired_name).name or downloaded_path.name)
+        destination = target_dir / desired_name
+        if destination.exists():
+            destination = target_dir / f"{destination.stem}_{downloaded_path.stem[-6:]}{destination.suffix}"
+        if downloaded_path.resolve() != destination.resolve():
+            shutil.move(str(downloaded_path), str(destination))
+            final_path = destination
+
+    emit_tool_observation(
+        "browser_download",
+        "OK",
+        f"size={final_path.stat().st_size}",
+        f"file={final_path.name}",
+    )
+    return f"[OK] 已通过浏览器下载到 {final_path}"
 
 
 async def js(session: BrowserSession, code: str) -> Any:

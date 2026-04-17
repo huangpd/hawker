@@ -16,6 +16,11 @@ class Settings(BaseSettings):
         openai_base_url (str | None): LLM API 的基础 URL。默认为 None。
         model_name (str): 要使用的 LLM 模型名称。
         reasoning_effort (str): 推理模型的努力程度。默认为 ""。
+        langfuse_public_key (str | None): Langfuse 公钥。默认为 None。
+        langfuse_secret_key (str | None): Langfuse 私钥。默认为 None。
+        langfuse_base_url (str | None): Langfuse 服务地址。默认为 None。
+        langfuse_environment (str): Langfuse 环境标签。默认为 "development"。
+        langfuse_release (str): Langfuse 版本标签。默认为 ""。
         max_total_tokens (int): 任务允许的最大总 token 数。默认为 120,000。
         max_no_progress_steps (int): 停止前允许的最大无进展步数。默认为 10。
         message_compression_tokens (int): 触发消息压缩的 token 阈值。默认为 12,000。
@@ -36,6 +41,11 @@ class Settings(BaseSettings):
     openai_base_url: str | None = None
     model_name: str
     reasoning_effort: str = ""
+    langfuse_public_key: str | None = None
+    langfuse_secret_key: str | None = None
+    langfuse_base_url: str | None = None
+    langfuse_environment: str = "development"
+    langfuse_release: str = ""
 
     # 预算控制
     max_total_tokens: int = 120_000

@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterator
 
+from hawker_agent.langfuse_client import end_observation, start_observation, update_observation
 from hawker_agent.models.trace import LogContext, Span, TraceProcessor
 
 _LOG_CONTEXT: contextvars.ContextVar[LogContext] = contextvars.ContextVar(
@@ -70,8 +71,19 @@ def add_trace_processor(processor: TraceProcessor) -> None:
     Args:
         processor (TraceProcessor): 要添加到注册表中的处理器。
     """
-    if processor not in _TRACE_PROCESSORS:
-        _TRACE_PROCESSORS.append(processor)
+    processor_type = type(processor)
+    for existing in list(_TRACE_PROCESSORS):
+        if type(existing) is processor_type:
+            return
+    _TRACE_PROCESSORS.append(processor)
+
+
+def remove_trace_processor(processor: TraceProcessor) -> None:
+    """移除一个追踪处理器。"""
+    try:
+        _TRACE_PROCESSORS.remove(processor)
+    except ValueError:
+        pass
 
 
 @contextlib.contextmanager
@@ -108,6 +120,26 @@ def trace(name: str, **metadata: Any) -> Iterator[Span]:
         name=name,
         metadata=metadata,
     )
+
+    observation_type = "tool" if metadata.get("is_tool") else metadata.get("as_type", "span")
+    observation_input = metadata.get("input")
+    observation_model = metadata.get("model")
+    observation_metadata = {
+        "hawker_trace_id": trace_id,
+        "hawker_span_id": span.span_id,
+        "hawker_parent_id": span.parent_id,
+        **metadata,
+    }
+    obs, obs_ctx = start_observation(
+        name=name,
+        input=observation_input,
+        metadata=observation_metadata,
+        as_type=observation_type,
+        model=observation_model,
+        parent_observation=parent.external_observation if parent else None,
+    )
+    span.external_observation = obs
+    span.external_context_manager = obs_ctx
     
     # 兼容现有日志系统：绑定 trace_id 和 step
     log_ctx_token = _LOG_CONTEXT.set(LogContext(
@@ -131,15 +163,22 @@ def trace(name: str, **metadata: Any) -> Iterator[Span]:
         span.status = "error"
         span.data["error"] = str(e)
         span.data["error_type"] = type(e).__name__
+        update_observation(span.external_observation, level="ERROR", status_message=str(e))
         raise
     finally:
         span.end_time = time.time()
+        update_observation(
+            span.external_observation,
+            output=span.data if span.data else None,
+            metadata={**span.metadata, "status": span.status, "duration_s": round(span.elapsed(), 4)},
+        )
         for proc in _TRACE_PROCESSORS:
             try:
                 proc.on_span_end(span)
             except Exception:
                 logging.getLogger(__name__).exception("Error in trace processor on_span_end")
         
+        end_observation(span.external_context_manager)
         _CURRENT_SPAN.reset(span_token)
         _LOG_CONTEXT.reset(log_ctx_token)
 

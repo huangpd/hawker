@@ -69,6 +69,127 @@ class TestMemoryStore:
         rendered = MemoryMatch(entry=entry, score=140.0, reason="site=example.com").render()
         assert rendered.startswith("- 可执行配方:")
 
+    def test_search_prunes_same_site_and_type_density(self, tmp_path) -> None:
+        store = MemoryStore(tmp_path / "memory.db")
+        entries = [
+            MemoryEntry(
+                memory_type="raw_extract_code",
+                site_key="arxiv.org",
+                task_intent="download",
+                page_kind="download_page",
+                summary="arxiv extract A",
+                detail="code A",
+                success=True,
+                negative=False,
+                confidence=0.9,
+                source_run_id="run_a",
+                source_step=1,
+                source_url="https://arxiv.org/abs/1",
+            ),
+            MemoryEntry(
+                memory_type="raw_extract_code",
+                site_key="arxiv.org",
+                task_intent="download",
+                page_kind="download_page",
+                summary="arxiv extract B",
+                detail="code B",
+                success=True,
+                negative=False,
+                confidence=0.89,
+                source_run_id="run_b",
+                source_step=2,
+                source_url="https://arxiv.org/abs/2",
+            ),
+            MemoryEntry(
+                memory_type="raw_network_code",
+                site_key="arxiv.org",
+                task_intent="download",
+                page_kind="download_page",
+                summary="arxiv network",
+                detail="code C",
+                success=True,
+                negative=False,
+                confidence=0.88,
+                source_run_id="run_c",
+                source_step=3,
+                source_url="https://arxiv.org/abs/3",
+            ),
+            MemoryEntry(
+                memory_type="raw_extract_code",
+                site_key="openreview.net",
+                task_intent="download",
+                page_kind="download_page",
+                summary="openreview extract",
+                detail="code D",
+                success=True,
+                negative=False,
+                confidence=0.87,
+                source_run_id="run_d",
+                source_step=4,
+                source_url="https://openreview.net/forum?id=x",
+            ),
+        ]
+        store.upsert_entries(entries)
+
+        matches = store.search(
+            "打开 https://arxiv.org 和 https://openreview.net 获取 web agent pdf 下载链接",
+            limit=5,
+        )
+
+        assert len(matches) <= 5
+        summaries = [m.entry.summary for m in matches]
+        assert "arxiv extract A" in summaries or "arxiv extract B" in summaries
+        assert not ("arxiv extract A" in summaries and "arxiv extract B" in summaries)
+
+    def test_search_limits_single_site_to_two_matches(self, tmp_path) -> None:
+        store = MemoryStore(tmp_path / "memory.db")
+        entries = []
+        for idx, memory_type in enumerate(
+            ["raw_extract_code", "raw_network_code", "raw_pagination_code"], start=1
+        ):
+            entries.append(
+                MemoryEntry(
+                    memory_type=memory_type,
+                    site_key="arxiv.org",
+                    task_intent="download",
+                    page_kind="download_page",
+                    summary=f"arxiv {memory_type}",
+                    detail=f"code {idx}",
+                    success=True,
+                    negative=False,
+                    confidence=0.9 - idx * 0.01,
+                    source_run_id=f"run_{idx}",
+                    source_step=idx,
+                    source_url=f"https://arxiv.org/abs/{idx}",
+                )
+            )
+        entries.append(
+            MemoryEntry(
+                memory_type="raw_extract_code",
+                site_key="openreview.net",
+                task_intent="download",
+                page_kind="download_page",
+                summary="openreview extract",
+                detail="code openreview",
+                success=True,
+                negative=False,
+                confidence=0.6,
+                source_run_id="run_openreview",
+                source_step=10,
+                source_url="https://openreview.net/forum?id=y",
+            )
+        )
+        store.upsert_entries(entries)
+
+        matches = store.search(
+            "打开 https://arxiv.org 和 https://openreview.net 获取 web agent pdf 下载链接",
+            limit=3,
+        )
+
+        arxiv_count = sum(1 for match in matches if match.entry.site_key == "arxiv.org")
+        assert arxiv_count <= 2
+        assert any(match.entry.site_key == "openreview.net" for match in matches)
+
 
 class TestRawCodeMemory:
     def test_build_raw_code_memories_filters_low_value_steps(self) -> None:

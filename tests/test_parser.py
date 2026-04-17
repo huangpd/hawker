@@ -89,3 +89,10 @@ class TestParseResponse:
         result = parse_response(text)
         assert "line1()" in result.code
         assert "line2()" in result.code
+
+    def test_truncated_unclosed_python_block(self) -> None:
+        text = "先分析\n```python\nawait nav('https://example.com')\nobserve('ok')"
+        result = parse_response(text)
+        assert result.thought == "先分析"
+        assert "await nav(" in result.code
+        assert "observe('ok')" in result.code

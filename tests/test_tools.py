@@ -22,7 +22,7 @@ from hawker_agent.tools.data_tools import (
     summarize_json,
     register_data_tools,
 )
-from hawker_agent.tools.http_tools import http_json, http_request
+from hawker_agent.tools.http_tools import fetch, http_json, http_request
 from hawker_agent.tools.registry import ToolRegistry
 
 
@@ -146,9 +146,9 @@ class TestBuildNamespace:
         assert callable(ns["observe"])
         assert callable(ns["final_answer"])
         # Data tools
-        assert callable(ns["clean_items"])
+        assert callable(ns["sys_clean_items"])
         assert callable(ns["ensure"])
-        assert callable(ns["summarize_json"])
+        assert callable(ns["sys_summarize_json"])
 
     def test_contains_stdlib(self) -> None:
         state = CodeAgentState()
@@ -217,9 +217,61 @@ def test_register_data_tools() -> None:
     # Check sync/async split
     sync_caps = reg.build_capabilities_list("sync")
     async_caps = reg.build_capabilities_list("async")
-    assert "ensure" in sync_caps
+    assert "ensure" not in sync_caps
+    assert "parse_http_response" not in sync_caps
     assert "await" not in sync_caps
     assert "asyncio.sleep" in async_caps
+
+
+def test_hidden_tools_do_not_appear_in_prompt_capabilities() -> None:
+    reg = ToolRegistry()
+
+    def visible_tool() -> None:
+        """可见工具"""
+
+    def hidden_tool() -> None:
+        """隐藏工具"""
+
+    reg.register(visible_tool, category="同步工具")
+    reg.register(hidden_tool, category="同步工具", expose_in_prompt=False)
+
+    sync_caps = reg.build_capabilities_list("sync")
+    assert "visible_tool" in sync_caps
+    assert "hidden_tool" not in sync_caps
+
+
+@pytest.mark.asyncio
+async def test_fetch_dispatches_to_http_json() -> None:
+    from hawker_agent.tools import http_tools as http_tools_module
+
+    async def fake_http_json(*args, **kwargs):
+        return {"ok": True, "mode": "json"}
+
+    original = http_tools_module.http_json
+    http_tools_module.http_json = fake_http_json
+    try:
+        result = await fetch("https://example.com/api", parse="json")
+    finally:
+        http_tools_module.http_json = original
+
+    assert result == {"ok": True, "mode": "json"}
+
+
+@pytest.mark.asyncio
+async def test_fetch_dispatches_to_http_request() -> None:
+    from hawker_agent.tools import http_tools as http_tools_module
+
+    async def fake_http_request(*args, **kwargs):
+        return "[200]\\nplain text"
+
+    original = http_tools_module.http_request
+    http_tools_module.http_request = fake_http_request
+    try:
+        result = await fetch("https://example.com/api", parse="text")
+    finally:
+        http_tools_module.http_request = original
+
+    assert result == "[200]\\nplain text"
 
 
 def test_save_result_json_does_not_delete_result_when_checkpoint_has_same_name(tmp_path: Path) -> None:

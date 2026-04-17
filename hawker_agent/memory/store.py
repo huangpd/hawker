@@ -206,9 +206,10 @@ _RUNTIME_SYMBOLS: set[str] = {
     # browser + network tools
     "nav", "dom_state", "nav_search", "js", "click", "click_index", "fill_input",
     "http_request", "get_network_log", "http_json", "get_cookies", "get_selector_from_index",
-    "browser_download", "download_file",
+    "browser_download",
     # data tools + core actions
-    "parse_http_response", "clean_items", "ensure", "append_items",
+    "sys_parse_http_response", "sys_clean_items", "sys_normalize_items", "sys_summarize_json",
+    "sys_save_file", "ensure", "append_items",
     "save_checkpoint", "final_answer", "observe",
     # async variants
     "async_nav", "async_dom_state", "async_nav_search", "async_js",
@@ -474,6 +475,44 @@ class MemoryStore:
                 )
         return entries
 
+    def _prune_matches(self, matches: list[MemoryMatch], limit: int) -> list[MemoryMatch]:
+        """对召回结果做多样性裁剪，避免同站点/同类型记忆过密。"""
+        pruned: list[MemoryMatch] = []
+        seen_site_type: set[tuple[str, str]] = set()
+        site_counts: dict[str, int] = {}
+
+        for match in matches:
+            site_type = (match.entry.site_key, match.entry.memory_type)
+            if site_type in seen_site_type:
+                continue
+            site_count = site_counts.get(match.entry.site_key, 0)
+            if site_count >= 2:
+                continue
+
+            pruned.append(match)
+            seen_site_type.add(site_type)
+            site_counts[match.entry.site_key] = site_count + 1
+            if len(pruned) >= limit:
+                return pruned
+
+        if len(pruned) >= limit:
+            return pruned[:limit]
+
+        selected_fp = {match.entry.fingerprint for match in pruned}
+        for match in matches:
+            if match.entry.fingerprint in selected_fp:
+                continue
+            site_type = (match.entry.site_key, match.entry.memory_type)
+            if site_type in seen_site_type:
+                continue
+            pruned.append(match)
+            selected_fp.add(match.entry.fingerprint)
+            seen_site_type.add(site_type)
+            if len(pruned) >= limit:
+                break
+
+        return pruned[:limit]
+
     def search(self, task: str, *, site_keys: list[str] | None = None, limit: int = 5) -> list[MemoryMatch]:
         """按站点和任务意图召回记忆。
 
@@ -524,7 +563,7 @@ class MemoryStore:
                 ORDER BY score DESC, updated_at DESC
                 LIMIT ?
                 """,
-                [*resolved_site_keys, task_intent, *resolved_site_keys, task_intent, limit],
+                [*resolved_site_keys, task_intent, *resolved_site_keys, task_intent, max(limit * 4, 12)],
             ).fetchall()
 
         matches: list[MemoryMatch] = []
@@ -551,4 +590,4 @@ class MemoryStore:
             if entry.negative:
                 reason_parts.append("negative")
             matches.append(MemoryMatch(entry=entry, score=float(row["score"]), reason=", ".join(reason_parts)))
-        return matches
+        return self._prune_matches(matches, limit)

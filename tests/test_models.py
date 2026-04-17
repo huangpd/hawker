@@ -23,7 +23,12 @@ from hawker_agent.models.output import CodeAgentModelOutput
 from hawker_agent.models.result import CodeAgentResult
 from hawker_agent.models.state import CodeAgentState, TokenStats
 from hawker_agent.models.step import CodeAgentStepMetadata
-from hawker_agent.agent.runner import _recover_items_from_final_answer
+from hawker_agent.agent.runner import (
+    _build_namespace_skip_names,
+    _recover_items_from_final_answer,
+    _validate_final_answer_request,
+)
+from hawker_agent.agent.namespace import HawkerNamespace
 
 
 # ─── exceptions ─────────────────────────────────────────────────
@@ -204,6 +209,44 @@ class TestCodeAgentState:
         items = _recover_items_from_final_answer(payload)
         assert len(items) == 2
         assert items[1]["url"] == "https://b"
+
+    def test_validate_final_answer_request_rejects_first_step(self) -> None:
+        state = CodeAgentState()
+        state.items.append([{"url": "https://a", "start": "1"}])
+        step_meta = CodeAgentStepMetadata(step_no=1, activity_before=0, progress_before=0)
+        reason = _validate_final_answer_request(1, state, step_meta)
+        assert reason is not None
+        assert "首步禁止直接完成" in reason
+
+    def test_validate_final_answer_request_rejects_first_collection_step(self) -> None:
+        state = CodeAgentState()
+        state.items.append([{"url": "https://a"}, {"url": "https://b"}])
+        state.activity_marker = 1
+        step_meta = CodeAgentStepMetadata(step_no=2, activity_before=0, progress_before=0)
+        reason = _validate_final_answer_request(2, state, step_meta)
+        assert reason is not None
+        assert "首次采集到数据" in reason
+
+    def test_validate_final_answer_request_allows_after_check_step(self) -> None:
+        state = CodeAgentState()
+        state.items.append(
+            [
+                {"url": "https://a", "start": 0, "fork": 0, "today_start": 10},
+                {"url": "https://b", "start": 0, "fork": 0, "today_start": 11},
+            ]
+        )
+        state.activity_marker = 1
+        step_meta = CodeAgentStepMetadata(step_no=3, activity_before=1, progress_before=1)
+        reason = _validate_final_answer_request(3, state, step_meta)
+        assert reason is None
+
+    def test_build_namespace_skip_names_uses_system_keys(self) -> None:
+        namespace = HawkerNamespace({"nav": object(), "fetch": object(), "json": object()}, "/tmp/run")
+        skip_names = _build_namespace_skip_names(namespace)
+        assert "nav" in skip_names
+        assert "fetch" in skip_names
+        assert "json" in skip_names
+        assert "run_dir" in skip_names
 
 
 # ─── CodeCell ───────────────────────────────────────────────────

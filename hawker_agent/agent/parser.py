@@ -28,6 +28,15 @@ def parse_response(text: str) -> CodeAgentModelOutput:
             thought = text[: g_matches[0].start()].strip()
             code = "\n\n".join(m.group(1).strip() for m in g_matches if m.group(1).strip())
             return CodeAgentModelOutput(thought=thought, code=code)
+
+        # fallback: 截断导致代码块未闭合，尝试提取最后一个 ```python 到文本结尾
+        truncated_python = re.search(r"```python(?:\s+\w+)?\n(.*)$", text, re.DOTALL)
+        if truncated_python:
+            start = truncated_python.start()
+            thought = text[:start].strip()
+            code = truncated_python.group(1).strip()
+            if code:
+                return CodeAgentModelOutput(thought=thought, code=code)
         return CodeAgentModelOutput(thought=text.strip(), code="")
 
     thought = text[: matches[0].start()].strip()

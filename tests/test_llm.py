@@ -63,6 +63,20 @@ class TestCalculateCost:
         with patch("hawker_agent.llm.cost._litellm_completion_cost", side_effect=Exception):
             assert calculate_cost(object()) == 0.0
 
+    def test_fallback_to_model_and_messages(self) -> None:
+        with patch(
+            "hawker_agent.llm.cost._litellm_completion_cost",
+            side_effect=[Exception("bad response"), 0.07],
+        ) as mock:
+            result = calculate_cost(
+                object(),
+                model="us.anthropic.claude-opus-4-6-v1",
+                messages=[{"role": "user", "content": "hello"}],
+                completion="world",
+            )
+        assert result == pytest.approx(0.07)
+        assert mock.call_count == 2
+
 
 # ─── client helpers ─────────────────────────────────────────────
 

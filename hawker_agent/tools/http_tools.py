@@ -222,82 +222,49 @@ async def http_json(
     return data
 
 
-async def download_file(
-    url: str, 
-    filename: str | None = None, 
-    run_dir: str | None = None, 
-    cookies: dict | str | list = "",
-    **kwargs: Any
-) -> str:
-    """
-    通用流式下载工具。
-    支持别名参数: json, data (自动映射到请求体)
-    """
-    from pathlib import Path
-    import re
-    import urllib.parse
-
-    client = _get_client()
-
-    # 处理 Agent 常见的参数名习惯
-    request_body = None
-    if "json" in kwargs:
-        request_body = json_lib.dumps(kwargs["json"])
-    elif "data" in kwargs:
-        request_body = kwargs["data"] if isinstance(kwargs["data"], str) else json_lib.dumps(kwargs["data"])
-
-    c = _parse_cookies(cookies)
-
-    _validate_url(url)
-    try:
-        method = "POST" if request_body else "GET"
-        async with client.stream(method, url, cookies=c, content=request_body) as resp:
-            if resp.status_code != 200:
-                return f"[失败] HTTP {resp.status_code}: {url}"
-            
-            # 1. 确定并清洗文件名
-            final_filename = filename
-            if not final_filename:
-                # 尝试从 Content-Disposition 提取
-                cd = resp.headers.get("content-disposition", "")
-                if "filename=" in cd:
-                    match = re.search(r'filename=["\']?([^"\';]+)["\']?', cd)
-                    if match: final_filename = match.group(1)
-                
-                if not final_filename:
-                    # 从 URL 路径提取
-                    path_str = urllib.parse.urlparse(url).path
-                    final_filename = path_str.split("/")[-1] or "downloaded_file"
-
-            # 移除非法字符
-            final_filename = re.sub(r'[\\/*?:"<>|]', '_', final_filename)
-            # Strip path traversal: only keep the basename
-            final_filename = Path(final_filename).name or "downloaded_file"
-            
-            # 2. 处理保存路径
-            if run_dir:
-                save_path = Path(run_dir) / final_filename
-            else:
-                save_path = Path(final_filename)
-                
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-                
-            # 3. 执行块写入 (Chunked Write)
-            total_bytes = 0
-            with open(save_path, "wb") as f:
-                async for chunk in resp.aiter_bytes(chunk_size=8192):
-                    f.write(chunk)
-                    total_bytes += len(chunk)
-            
-            emit_tool_observation("download_file", str(resp.status_code), f"size={total_bytes}", f"file={save_path.name}")
-            return f"[OK] 已保存 {total_bytes} 字节到 {save_path}"
-    except Exception as e:
-        logger.exception("下载文件失败: %s", url)
-        return f"[错误] {e}"
+async def fetch(
+    url: str,
+    method: str = "GET",
+    parse: str = "json",
+    headers: str | dict | None = None,
+    params: dict | str | None = None,
+    data: Any = None,
+    json: Any = None,
+    content: str | bytes | None = None,
+    cookies: dict | str | list | None = None,
+    **kwargs: Any,
+) -> Any:
+    """统一 HTTP 请求入口，优先使用此工具请求接口数据。"""
+    normalized_parse = (parse or "json").lower()
+    if normalized_parse == "json":
+        return await http_json(
+            url,
+            method=method,
+            headers=headers,
+            params=params,
+            data=data,
+            json=json,
+            content=content,
+            cookies=cookies,
+            **kwargs,
+        )
+    if normalized_parse in {"text", "raw"}:
+        return await http_request(
+            url,
+            method=method,
+            headers=headers,
+            params=params,
+            data=data,
+            json=json,
+            content=content,
+            cookies=cookies,
+            **kwargs,
+        )
+    raise ValueError(f"fetch(parse=...) 仅支持 json / text / raw，收到: {parse}")
 
 
 def register_http_tools(registry: ToolRegistry) -> None:
     """注册 HTTP 工具到 registry。"""
-    registry.register(http_request, category="网络 & 数据")
-    registry.register(http_json, category="网络 & 数据")
-    registry.register(download_file, category="网络 & 数据")
+    registry.register(fetch, category="网络 & 数据")
+    registry.register(http_request, category="网络 & 数据", expose_in_prompt=False)
+    registry.register(http_json, category="网络 & 数据", expose_in_prompt=False)

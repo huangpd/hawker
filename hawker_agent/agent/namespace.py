@@ -236,7 +236,7 @@ def build_namespace(
 
     # 注入外部工具（包括通过 register_core_actions 注入的核心动作）
     for name, fn in tools_dict.items():
-        if name in ("browser_download", "download_file"):
+        if name == "browser_download":
             # 为这些涉及文件写入的工具自动注入 run_dir 参数
             # 注意：必须使用默认参数绑定 fn_to_call，否则闭包会捕获循环变量的最终值
             if inspect.iscoroutinefunction(inspect.unwrap(fn)):
@@ -258,12 +258,12 @@ def build_namespace(
 
     # 注入数据辅助函数
     # 注意：这里注入是为了让代码能跑通，但由于它们没在 ToolRegistry 注册，所以不会出现在 Prompt 里
-    sys_dict["clean_items"] = clean_items
+    sys_dict["sys_clean_items"] = clean_items
     sys_dict["ensure"] = ensure
-    sys_dict["parse_http_response"] = parse_http_response
-    sys_dict["summarize_json"] = summarize_json
-    sys_dict["normalize_items"] = normalize_items
-    sys_dict["save_file"] = save_file
+    sys_dict["sys_parse_http_response"] = parse_http_response
+    sys_dict["sys_summarize_json"] = summarize_json
+    sys_dict["sys_normalize_items"] = normalize_items
+    sys_dict["sys_save_file"] = save_file
     
     # 共享数据引用 (使用 ClearableList 包装)
     sys_dict["all_items"] = ClearableList(state.items.get_raw_list(), state.items)

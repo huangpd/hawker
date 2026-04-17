@@ -177,7 +177,7 @@ def register_browser_tools(
         )
         return _handle_dom_result(result)
 
-    async def nav_search(query: str, engine: str = "duckduckgo", mode: str = "auto") -> str:
+    async def nav_search(query: str, engine: str = "duckduckgo", mode: str = "summary") -> str:
         """执行搜索并返回摘要字符串；结果页上下文会写入下一轮 DOM Workspace。"""
         effective_mode = _resolve_mode("nav_search", mode)
         result = await actions.nav_search(
@@ -188,6 +188,51 @@ def register_browser_tools(
             previous_snapshot=_previous_snapshot(),
         )
         return _handle_dom_result(result)
+
+    async def inspect_page(
+        dom: bool = True,
+        network: bool = False,
+        cookies: bool = False,
+        selector_index: int | None = None,
+        mode: str = "summary",
+        only_new_network: bool = True,
+    ) -> dict[str, Any]:
+        """统一页面侦察入口，可按需组合 DOM、抓包、Cookie 与指定元素选择器。"""
+        payload: dict[str, Any] = {}
+
+        if dom:
+            effective_mode = _resolve_mode("dom_state", mode)
+            dom_result = await actions.dom_state(
+                session,
+                mode=effective_mode,
+                previous_snapshot=_previous_snapshot(),
+            )
+            payload["dom"] = {
+                "summary": _handle_dom_result(dom_result),
+                "mode": dom_result.context_mode,
+                "snapshot": dom_result.snapshot or {},
+            }
+
+        if network:
+            payload["network"] = await actions.get_network_log(session, "", only_new_network)
+
+        if cookies:
+            payload["cookies"] = await actions.get_cookies(session)
+
+        if selector_index is not None:
+            from hawker_agent.browser.dom_utils import get_selector_from_index as _get_selector
+
+            res = await _get_selector(session.raw, selector_index)
+            js_snippet = "document"
+            for host in res["shadow_path"]:
+                js_snippet += f'.querySelector("{host}").shadowRoot'
+            js_snippet += f'.querySelector("{res["selector"]}")'
+            res["js_snippet"] = js_snippet
+            payload["selector"] = res
+
+        if not payload:
+            return {"summary": "未请求任何页面状态"}
+        return payload
 
     async def js(code: str) -> Any:
         """在当前页面执行 JavaScript,返回值会自动转换为 Python 类型（如 JS 的 Array 变为 Python List）,无需在 JS 中使用 JSON.stringify
@@ -251,11 +296,7 @@ def register_browser_tools(
 
     async def browser_download(url: str, filename: str | None = None, **kwargs: object) -> str:
         """利用浏览器会话下载文件"""
-        from hawker_agent.tools import http_tools
-        # 1. 提取 Cookie
-        cookies = await actions.get_cookies(session)
-        # 2. 调用通用下载引擎（自动注入 run_dir 已在 namespace 层处理，此处透传 kwargs）
-        return await http_tools.download_file(url, filename, cookies=cookies, **kwargs)  # type: ignore
+        return await actions.browser_download(session, url, filename=filename, **kwargs)
 
     async def get_network_log(filter: str = "", only_new: bool = False) -> list[dict[str, Any]]:
         """读取页面拦截到的 Fetch/XHR 网络请求日志。"""
@@ -296,17 +337,18 @@ def register_browser_tools(
 
     # 注册所有工具
     tools_to_register = [
-        (nav, "导航与页面"),
-        (dom_state, "导航与页面"),
-        (nav_search, "导航与页面"),
-        (js, "导航与页面"),
-        (click, "交互"),
-        (click_index, "交互"),
-        (fill_input, "交互"),
-        (browser_download, "网络 & 数据"),
-        (get_network_log, "网络 & 数据"),
-        (get_selector_from_index, "交互"),
-        (get_cookies, "网络 & 数据")
+        (nav, "导航与页面", True),
+        (dom_state, "导航与页面", False),
+        (nav_search, "导航与页面", True),
+        (inspect_page, "导航与页面", True),
+        (js, "导航与页面", True),
+        (click, "交互", False),
+        (click_index, "交互", True),
+        (fill_input, "交互", True),
+        (browser_download, "网络 & 数据", True),
+        (get_network_log, "网络 & 数据", False),
+        (get_selector_from_index, "交互", False),
+        (get_cookies, "网络 & 数据", False),
     ]
-    for fn, category in tools_to_register:
-        registry.register(fn, category=category)
+    for fn, category, expose_in_prompt in tools_to_register:
+        registry.register(fn, category=category, expose_in_prompt=expose_in_prompt)

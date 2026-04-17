@@ -91,6 +91,35 @@ class TestBrowserToolModes:
         assert state.last_dom_snapshot == {"title": "列表页", "interactive_count": 2}
         history.inject_browser_context.assert_not_called()
 
+    async def test_nav_search_defaults_to_summary(self) -> None:
+        registry = ToolRegistry()
+        history = MagicMock()
+        session = MagicMock()
+        state = CodeAgentState()
+
+        register_browser_tools(registry, session, history, state)
+        nav_search = registry.as_namespace_dict()["nav_search"]
+
+        async def fake_nav_search(*args, **kwargs):
+            assert kwargs["mode"] == "summary"
+            return DomActionResult(
+                summary="[OK] 搜索页 | 交互元素 6 | DOM=summary",
+                dom=None,
+                snapshot={"title": "搜索页", "interactive_count": 6},
+            )
+
+        from hawker_agent.tools import browser_tools as browser_tools_module
+
+        original = browser_tools_module.actions.nav_search
+        browser_tools_module.actions.nav_search = fake_nav_search
+        try:
+            result = await nav_search("web agent", engine="google")
+        finally:
+            browser_tools_module.actions.nav_search = original
+
+        assert "DOM=summary" in result
+        history.inject_browser_context.assert_not_called()
+
     async def test_dom_state_auto_uses_full_without_previous_snapshot(self) -> None:
         registry = ToolRegistry()
         history = MagicMock()
@@ -217,6 +246,61 @@ class TestBrowserToolModes:
         assert "已自动补充 DOM=diff" in result
         assert history.inject_browser_context.call_count == 1
         assert state.last_dom_snapshot == {"title": "旧页", "interactive_count": 2}
+
+    async def test_inspect_page_combines_dom_network_cookies_and_selector(self) -> None:
+        registry = ToolRegistry()
+        history = MagicMock()
+        session = MagicMock()
+        raw_session = MagicMock()
+        session.raw = raw_session
+        state = CodeAgentState()
+
+        register_browser_tools(registry, session, history, state)
+        inspect_page = registry.as_namespace_dict()["inspect_page"]
+
+        async def fake_dom_state(*args, **kwargs):
+            assert kwargs["mode"] == "summary"
+            return DomActionResult(
+                summary="[OK] 结果页 | 交互元素 4 | DOM=summary",
+                dom=None,
+                snapshot={"title": "结果页", "interactive_count": 4},
+            )
+
+        async def fake_network_log(*args, **kwargs):
+            assert args[2] is True
+            return [{"url": "https://example.com/api"}]
+
+        async def fake_get_cookies(*args, **kwargs):
+            return [{"name": "sid", "value": "abc"}]
+
+        async def fake_get_selector(*args, **kwargs):
+            return {"selector": ".item", "shadow_path": []}
+
+        from hawker_agent.tools import browser_tools as browser_tools_module
+
+        original_dom_state = browser_tools_module.actions.dom_state
+        original_network_log = browser_tools_module.actions.get_network_log
+        original_get_cookies = browser_tools_module.actions.get_cookies
+        browser_tools_module.actions.dom_state = fake_dom_state
+        browser_tools_module.actions.get_network_log = fake_network_log
+        browser_tools_module.actions.get_cookies = fake_get_cookies
+
+        from hawker_agent.browser import dom_utils as dom_utils_module
+        original_get_selector = dom_utils_module.get_selector_from_index
+        dom_utils_module.get_selector_from_index = fake_get_selector
+        try:
+            result = await inspect_page(dom=True, network=True, cookies=True, selector_index=12)
+        finally:
+            browser_tools_module.actions.dom_state = original_dom_state
+            browser_tools_module.actions.get_network_log = original_network_log
+            browser_tools_module.actions.get_cookies = original_get_cookies
+            dom_utils_module.get_selector_from_index = original_get_selector
+
+        assert result["dom"]["summary"].endswith("DOM=summary")
+        assert result["network"] == [{"url": "https://example.com/api"}]
+        assert result["cookies"] == [{"name": "sid", "value": "abc"}]
+        assert result["selector"]["selector"] == ".item"
+        assert "js_snippet" in result["selector"]
 
     async def test_memory_guard_downgrades_explicit_full_dom_state(self) -> None:
         registry = ToolRegistry()

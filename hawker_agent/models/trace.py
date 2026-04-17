@@ -48,6 +48,8 @@ class Span:
     status: str = "running"  # running, success, error
     data: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
+    external_observation: Any | None = None
+    external_context_manager: Any | None = None
 
     def elapsed(self) -> float:
         """计算该追踪单元的持续时长。

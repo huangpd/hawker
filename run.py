@@ -101,16 +101,34 @@ Ye, Yingqiang Ge, and Yongfeng Zhang. Aios: Llm agent operating system. arXiv pr
 arXiv:2403.16971, 2024.
 '''
 """
+
+TASK='''
+1.打开 https://kns.cnki.net/kns8s/AdvSearch，点击专业检索
+2.检索词：SU%=航空+航天+飞行器设计+航空发动机+航天器+航空器+卫星+卫星遥感+航空遥感+航天遥感+飞行试验+航空无人机+航天无人机+空中交通+航空安全+航空电子+航空制造 and SU%=数据+数据科学+大数据+人工智能+机器学习+深度学习+数据挖掘+数据分析+数据融合+联邦学习+预测性维护+数据驱动+统计+自然语言处理+计算机视觉
+3.点击搜索
+4.需要爬取的字段：
+文献名称:
+作者:
+期刊页链接:
+发布时间:
+引用量:
+下载量:
+期刊影响因子
+摘要:
+关键词:
+发布单位：
+6.爬10页
+'''
+
 TASK="""
 1.打开 https://github.com/trending
-2.获取当前页面的项目URL、start、fork、today_start
+2.获取当前页面的项目URL、start、fork、today_start，获取数据就返回
 提取字段: 
 - URL: 项目链接 
 - start: start数 
 - fork： fork数
 - today_start: today_start数
 """
-
 # =================================================================
 
 async def main():

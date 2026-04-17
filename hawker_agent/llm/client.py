@@ -11,8 +11,9 @@ from litellm import acompletion as _litellm_completion
 
 from hawker_agent.config import Settings, get_settings
 from hawker_agent.exceptions import LLMError
+from hawker_agent.langfuse_client import update_observation
 from hawker_agent.llm.cost import calculate_cost
-from hawker_agent.observability import bind_log_context, get_log_context, trace
+from hawker_agent.observability import bind_log_context, get_current_span, get_log_context, trace
 
 # --- 彻底静音 LiteLLM ---
 litellm.set_verbose = False
@@ -176,11 +177,12 @@ class LLMClient:
         Raises:
             LLMError: 当请求失败或重试次数耗尽时抛出。
         """
-        model = _normalize_model_name(self._cfg.model_name)
+        raw_model_name = self._cfg.model_name
+        model = _normalize_model_name(raw_model_name)
         api_base = _normalize_api_base(self._cfg.openai_base_url)
         current_step = get_log_context().step
 
-        with trace("llm_generation", model=model) as span:
+        with trace("llm_generation", model=model, as_type="generation", input={"messages": messages}) as span:
             step_context = bind_log_context(step=current_step) if current_step != "-" else bind_log_context()
             with step_context:
                 # LiteLLM 警告: Gemini 3 系列模型 (如 gemini-3-flash-preview) 必须使用 temperature=1.0
@@ -193,7 +195,7 @@ class LLMClient:
                     "base_url": api_base,
                     "timeout": 180,
                     "temperature": temperature,
-                    "max_tokens": 1500,  # 强制压制长篇大论，缩短生成时间
+                    "max_tokens": 2500,  # 提高上限，降低 finish_reason=length 频率
                 }
                 
                 if self._cfg.reasoning_effort:
@@ -225,7 +227,12 @@ class LLMClient:
                 text = response.choices[0].message.content or ""
                 usage_dict = _usage_to_dict(getattr(response, "usage", None))
                 input_t, output_t, cached_t, total_t = _extract_usage(usage_dict)
-                cost = calculate_cost(response)
+                cost = calculate_cost(
+                    response,
+                    model=raw_model_name,
+                    messages=messages,
+                    completion=text,
+                )
                 is_truncated, truncate_reason = _detect_truncation(response)
 
                 # 丰富 Span 数据
@@ -240,6 +247,22 @@ class LLMClient:
                 logger.info(
                     "LLM 请求完成: model=%s in=%d(cached=%d) out=%d total=%d cost=$%.4f truncated=%s",
                     model, input_t, cached_t, output_t, total_t, cost, "yes" if is_truncated else "no"
+                )
+
+                current_span = get_current_span()
+                observation = current_span.external_observation if current_span else span.external_observation
+                update_observation(
+                    observation,
+                    output=text,
+                    usage_details={
+                        "prompt_tokens": input_t,
+                        "completion_tokens": output_t,
+                        "total_tokens": total_t,
+                        "cached_tokens": cached_t,
+                    },
+                    cost_details={"total": cost},
+                    model=model,
+                    metadata={"truncated": is_truncated, "truncate_reason": truncate_reason},
                 )
 
                 return LLMResponse(

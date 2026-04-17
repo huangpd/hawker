@@ -338,7 +338,6 @@ async def nav_search(
         )
     return await nav(session, url, mode=mode, previous_snapshot=previous_snapshot)
 
-
 async def browser_download(
     session: BrowserSession,
     url: str,
@@ -407,8 +406,6 @@ async def browser_download(
         f"file={final_path.name}",
     )
     return f"[OK] 已通过浏览器下载到 {final_path}"
-
-
 async def js(session: BrowserSession, code: str) -> Any:
     """在当前页面执行 JavaScript 代码，并返回完整执行结果。
 

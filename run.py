@@ -129,6 +129,9 @@ TASK="""
 - fork： fork数
 - today_start: today_start数
 """
+TASK="""
+步骤1: 打开 https://www.ahnews.com.cn/df/hss/pc/lay/node_525.html,点击"下一页"，获取3页数据,获取列表页URL和title 
+"""
 # =================================================================
 
 async def main():

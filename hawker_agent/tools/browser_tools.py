@@ -233,7 +233,6 @@ def register_browser_tools(
         if not payload:
             return {"summary": "未请求任何页面状态"}
         return payload
-
     async def js(code: str) -> Any:
         """在当前页面执行 JavaScript,返回值会自动转换为 Python 类型（如 JS 的 Array 变为 Python List）,无需在 JS 中使用 JSON.stringify
         

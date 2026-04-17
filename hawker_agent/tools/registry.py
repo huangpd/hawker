@@ -22,6 +22,7 @@ class ToolSpec:
     signature: str
     return_type: str
     category: str | None = None
+    expose_in_prompt: bool = True
 
 
 class ToolRegistry:
@@ -64,7 +65,14 @@ class ToolRegistry:
                         raise
             return sync_wrapper
 
-    def register(self, fn: Callable, name: str | None = None, category: str | None = None) -> Callable:
+    def register(
+        self,
+        fn: Callable,
+        name: str | None = None,
+        category: str | None = None,
+        *,
+        expose_in_prompt: bool = True,
+    ) -> Callable:
         """注册工具，可作为装饰器使用。"""
         tool_name = name or fn.__name__
         
@@ -84,6 +92,7 @@ class ToolRegistry:
             signature=str(sig),
             return_type=ret_name,
             category=category,
+            expose_in_prompt=expose_in_prompt,
         )
         return wrapped_fn
 
@@ -91,6 +100,8 @@ class ToolRegistry:
         """生成详细的工具文档（包含参数、文档字符串等）。"""
         lines = []
         for spec in self._tools.values():
+            if not spec.expose_in_prompt:
+                continue
             is_async = inspect.iscoroutinefunction(inspect.unwrap(spec.fn))
             prefix = "async " if is_async else ""
             lines.append(f"- {prefix}{spec.name}{spec.signature} -> {spec.return_type}: {spec.description}")
@@ -124,6 +135,8 @@ class ToolRegistry:
         grouped_tools: dict[str | None, list[str]] = defaultdict(list)
         
         for spec in self._tools.values():
+            if not spec.expose_in_prompt:
+                continue
             is_async = inspect.iscoroutinefunction(inspect.unwrap(spec.fn))
 
             # 过滤同步/异步

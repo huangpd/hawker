@@ -16,9 +16,57 @@ from rich.spinner import Spinner
 # 📝 在这里编写你的任务描述 (支持多行)
 # =================================================================
 
+
+
+TASK="""
+1. 打开 https://arxiv.org/search/advanced
+2. 搜素标题为 web agent 论文，查找2026年1月12到2026年3月30之间的论文
+3. 返回前3篇论文的链接、标题、摘要、发表时间，然后下载本地
+"""
+
+
+TASK="""
+步骤1: 获取 https://huggingface.co/datasets/nvidia/Nemotron-ClimbMix 仓库信息
+步骤5：提取这个仓库所有的文件名和下载URL
+"""
+
+
+TASK="""
+1. 检索web agent paper 获取前5条论文
+2. 返回前5条论文标题，下载链接（可下载的pdf链接），摘要，研究领域
+3. 并下载这5个文论到本地
+"""
+TASK="""
+步骤1: 打开 https://www.ahnews.com.cn/df/hss/pc/lay/node_525.html
+步骤2: 点击"下一页"，获取3页数据
+步骤3: 获取列表页URL和title 
+"""
+
+
+TASK="""
+1. 访问维基百科网站：https://en.wikipedia.org
+2. 分别搜索 OpenAI、APPLE 二家公司
+3. 打开维基百科的相关文章
+4. 从信息框和文章中提取以下内容：名称、成立日期、总部、现任首席执行官/领导者、所属行业、主要产品/服务（列出）、收入（如有则提供）、员工人数（如有则提供），以及 2-3 句概括
+提取字段:
+- name: "公司名称"
+- founded: "成立时间"
+- headquarters: "总部地址"
+- ceo: "现任 CEO"
+- industry: "所属行业"
+- products: "主要产品/服务列表"
+- revenue: "营收（如有）"
+- employees: "员工数量（如有）"
+- summary: "公司简介（2-3句话）"
+"""
+
+
+TASK="""
+步骤1: 打开 https://www.ahnews.com.cn/df/hss/pc/lay/node_525.html,点击"下一页"，获取3页数据,获取列表页URL和title 
+"""
 TASK="""
 1.打开 https://github.com/trending
-2.获取当前页面的项目URL、start、fork、today_start
+2.获取当前页面的项目URL、start、fork、today_start，获取第一页直接返回
 提取字段: 
 - URL: 项目链接 
 - start: start数 
@@ -26,7 +74,12 @@ TASK="""
 - today_start: today_start数
 """
 TASK="""
-1.获取content里提到的的论文下载链接，摘要，研究领域,返回json
+步骤1: 打开网址 https://mcp.aibase.com/zh/explore 
+步骤2: 找到下一页按钮，获取前10页数据 ，分类点击 "搜索工具",认证状态点击“不限”，编程语言是“python”，类型 “MCP Server”，点击按“按下载量”排序
+步骤3:提取所有项目名称、简介、url
+"""
+TASK="""
+1.获取content里提到的的论文下载链接（缺少部分应该网络搜索补全），摘要，研究领域,返回json
 content='''
 [86] Lutfi Eren Erdogan, Hiroki Furuta, Sehoon Kim, Nicholas Lee, Suhong Moon, Gopala Anumanchipalli, Kurt Keutzer, and Amir Gholami. Plan-and-Act: Improving planning of agents
 for long-horizon tasks. In Forty-second International Conference on Machine Learning, 2025.
@@ -49,54 +102,27 @@ arXiv:2403.16971, 2024.
 '''
 """
 
-TASK="""
-1. 打开 https://arxiv.org/search/advanced
-2. 搜素标题为 web agent 论文，查找2026年1月12到2026年3月30之间的论文
-3. 返回前3篇论文的链接、标题、摘要、发表时间，然后下载本地
-"""
+TASK='''
+1.打开 https://kns.cnki.net/kns8s/AdvSearch，点击专业检索
+2.检索词：SU%=航空+航天+飞行器设计+航空发动机+航天器+航空器+卫星+卫星遥感+航空遥感+航天遥感+飞行试验+航空无人机+航天无人机+空中交通+航空安全+航空电子+航空制造 and SU%=数据+数据科学+大数据+人工智能+机器学习+深度学习+数据挖掘+数据分析+数据融合+联邦学习+预测性维护+数据驱动+统计+自然语言处理+计算机视觉
+3.点击搜索
+4.需要爬取的字段：
+文献名称:
+作者:
+期刊页链接:
+发布时间:
+引用量:
+下载量:
+期刊影响因子
+摘要:
+关键词:
+发布单位：
+6.爬10页
+'''
 
-TASK="""
-1. 访问维基百科网站：https://en.wikipedia.org
-2. 分别搜索 OpenAI、APPLE 二家公司
-3. 打开维基百科的相关文章
-4. 从信息框和文章中提取以下内容：名称、成立日期、总部、现任首席执行官/领导者、所属行业、主要产品/服务（列出）、收入（如有则提供）、员工人数（如有则提供），以及 2-3 句概括
-提取字段:
-- name: "公司名称"
-- founded: "成立时间"
-- headquarters: "总部地址"
-- ceo: "现任 CEO"
-- industry: "所属行业"
-- products: "主要产品/服务列表"
-- revenue: "营收（如有）"
-- employees: "员工数量（如有）"
-- summary: "公司简介（2-3句话）"
-"""
-
-TASK="""
-步骤1: 获取 https://huggingface.co/datasets/nvidia/Nemotron-ClimbMix 仓库信息
-步骤5：提取这个仓库所有的文件名和下载URL
-"""
-
-TASK="""
-步骤1: 打开网址 https://mcp.aibase.com/zh/explore 
-步骤2: 找到下一页按钮，获取前10页数据 ，分类点击 "搜索工具",认证状态点击“不限”，编程语言是“python”，类型 “MCP Server”，点击按“按下载量”排序
-步骤3:提取所有项目名称、简介、url
-"""
-
-
-TASK="""
-1. 检索web agent paper 获取前5条论文
-2. 返回前5条论文标题，下载链接（可下载的pdf链接），摘要，研究领域
-3. 并下载这5个文论到本地
-"""
-TASK="""
-步骤1: 打开 https://www.ahnews.com.cn/df/hss/pc/lay/node_525.html
-步骤2: 点击"下一页"，获取3页数据
-步骤3: 获取列表页URL和title 
-"""
 TASK="""
 1.打开 https://github.com/trending
-2.获取当前页面的项目URL、start、fork、today_start，获取第一页直接返回
+2.获取当前页面的项目URL、start、fork、today_start，获取数据就返回
 提取字段: 
 - URL: 项目链接 
 - start: start数 
@@ -145,6 +171,7 @@ async def main():
     console.print(
         f"\n📊 [bold]运行统计汇总:[/bold]\n"
         f"  - 任务结果: [bold {status_color}]{'成功' if result.success else '未完全完成'}[/bold {status_color}]\n"
+        f"  - 使用模型: [dim]{result.model_name}[/dim]\n"
         f"  - 采集数据: [cyan]{result.items_count}[/cyan] 条\n"
         f"  - 迭代步数: [cyan]{result.total_steps}[/cyan] 步\n"
         f"  - 总计耗时: [bold cyan]{duration_str}[/bold cyan] ({result.total_duration:.1f}s)\n"

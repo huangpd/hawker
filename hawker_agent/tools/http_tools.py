@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
-import json
+import json as json_lib
 import logging
 import urllib.parse as _urlparse
 from typing import Any
@@ -79,50 +79,105 @@ def _parse_cookies(cookies_input: dict | str | list | None) -> dict | None:
         return result
     return None
 
+
+def _parse_headers(headers_input: dict | str | None) -> dict[str, str]:
+    """解析 headers 输入并规范化为字符串字典。"""
+    if not headers_input:
+        return {}
+    if isinstance(headers_input, dict):
+        return {str(k): str(v) for k, v in headers_input.items()}
+    try:
+        parsed = json_lib.loads(headers_input)
+        if isinstance(parsed, dict):
+            return {str(k): str(v) for k, v in parsed.items()}
+    except Exception:
+        pass
+    return {}
+
+
+def _build_request_payload(
+    *,
+    data: Any = None,
+    json_payload: Any = None,
+    content: str | bytes | None = None,
+    legacy_body: Any = None,
+) -> tuple[Any, Any, str | bytes | None]:
+    """统一处理 http_request/http_json 的请求体参数。"""
+    provided = [
+        ("json", json_payload is not None),
+        ("data", data is not None),
+        ("content", content is not None),
+        ("body", legacy_body is not None),
+    ]
+    active = [name for name, enabled in provided if enabled]
+    if len(active) > 1:
+        raise ValueError(f"Request payload is ambiguous; use only one of json/data/content/body, got: {', '.join(active)}")
+
+    if json_payload is not None:
+        return None, json_payload, None
+    if data is not None:
+        return data, None, None
+    if content is not None:
+        return None, None, content
+    if legacy_body is None:
+        return None, None, None
+    if isinstance(legacy_body, (dict, list)):
+        return None, legacy_body, None
+    return None, None, legacy_body
+
+
 async def http_request(
-    url: str, 
-    method: str = "GET", 
-    headers: str | dict = "", 
-    body: str | dict = "",
-    cookies: dict | str | list = "",
+    url: str,
+    method: str = "GET",
+    headers: str | dict | None = None,
+    params: dict | str | None = None,
+    data: Any = None,
+    json: Any = None,
+    content: str | bytes | None = None,
+    cookies: dict | str | list | None = None,
     **kwargs: Any
 ) -> str:
     """
     发送 HTTP 请求，返回完整响应文本。
-    支持别名参数: json, data (自动映射到 body)
-    """
-    # 处理 Agent 常见的参数名习惯
-    final_body = body
-    if "json" in kwargs:
-        final_body = json.dumps(kwargs["json"])
-    elif "data" in kwargs:
-        final_body = kwargs["data"] if isinstance(kwargs["data"], str) else json.dumps(kwargs["data"])
-    elif isinstance(body, dict):
-        final_body = json.dumps(body)
-    
-    h: dict[str, str] = {}
-    if headers:
-        try:
-            h = json.loads(headers) if isinstance(headers, str) else headers
-        except Exception: pass
-    
-    # 50年架构师提示：如果存在 body 但没有指定 Content-Type，自动补全为 JSON 以提升 Agent 成功率
-    if final_body:
-        h.setdefault("Content-Type", "application/json")
-        h.setdefault("Accept", "application/json, text/plain, */*")
-    
-    c = _parse_cookies(cookies)
 
-    h.setdefault("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36")
+    兼容说明：
+    - 旧参数 `body=` 仍可用，会自动映射到 `json` 或 `content`
+    - 额外的 `timeout`、`files` 等参数会透传给 httpx
+    """
+    legacy_body = kwargs.pop("body", None)
+    h = _parse_headers(headers)
+    c = _parse_cookies(cookies)
+    query_params = params
+    if isinstance(params, str):
+        try:
+            parsed_params = json_lib.loads(params)
+            query_params = parsed_params if isinstance(parsed_params, dict) else params
+        except Exception:
+            query_params = params
 
     _validate_url(url)
     client = _get_client()
     try:
-        if method.upper() == "POST":
-            resp = await client.post(url, headers=h, content=final_body, cookies=c)
-        else:
-            resp = await client.get(url, headers=h, cookies=c)
-            
+        request_data, request_json, request_content = _build_request_payload(
+            data=data,
+            json_payload=json,
+            content=content,
+            legacy_body=legacy_body,
+        )
+        h.setdefault("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36")
+        if request_json is not None:
+            h.setdefault("Accept", "application/json, text/plain, */*")
+        resp = await client.request(
+            method.upper(),
+            url,
+            headers=h,
+            params=query_params,
+            data=request_data,
+            json=request_json,
+            content=request_content,
+            cookies=c,
+            **kwargs,
+        )
         content_type = resp.headers.get("Content-Type", "unknown").split(";")[0]
         emit_tool_observation("http_request", str(resp.status_code), f"size={len(resp.text)}", f"type={content_type}")
         return f"[{resp.status_code}]\n{resp.text}"
@@ -132,21 +187,33 @@ async def http_request(
 
 
 async def http_json(
-    url: str, 
-    method: str = "GET", 
-    headers: str = "", 
-    body: str = "",
-    cookies: dict | str = "",
+    url: str,
+    method: str = "GET",
+    headers: str | dict | None = None,
+    params: dict | str | None = None,
+    data: Any = None,
+    json: Any = None,
+    content: str | bytes | None = None,
+    cookies: dict | str | list | None = None,
     **kwargs: Any
-) -> object:
+) -> Any:
     """
     发送 HTTP 请求并返回解析后的 JSON 对象。
-    - cookies: 可选。支持从 get_cookies() 获取的会话凭证。
     """
-    raw = await http_request(url, method, headers, body, cookies, **kwargs)
+    raw = await http_request(
+        url,
+        method=method,
+        headers=headers,
+        params=params,
+        data=data,
+        json=json,
+        content=content,
+        cookies=cookies,
+        **kwargs,
+    )
     status, text = parse_http_response(raw)
     ensure(200 <= status < 300, f"HTTP {status}: {text[:200]}")
-    data = json.loads(text)
+    data = json_lib.loads(text)
     if isinstance(data, list):
         data = clean_items(data)
     
@@ -155,82 +222,49 @@ async def http_json(
     return data
 
 
-async def download_file(
-    url: str, 
-    filename: str | None = None, 
-    run_dir: str | None = None, 
-    cookies: dict | str | list = "",
-    **kwargs: Any
-) -> str:
-    """
-    通用流式下载工具。
-    支持别名参数: json, data (自动映射到请求体)
-    """
-    from pathlib import Path
-    import re
-    import urllib.parse
-
-    client = _get_client()
-
-    # 处理 Agent 常见的参数名习惯
-    request_body = None
-    if "json" in kwargs:
-        request_body = json.dumps(kwargs["json"])
-    elif "data" in kwargs:
-        request_body = kwargs["data"] if isinstance(kwargs["data"], str) else json.dumps(kwargs["data"])
-
-    c = _parse_cookies(cookies)
-
-    _validate_url(url)
-    try:
-        method = "POST" if request_body else "GET"
-        async with client.stream(method, url, cookies=c, content=request_body) as resp:
-            if resp.status_code != 200:
-                return f"[失败] HTTP {resp.status_code}: {url}"
-            
-            # 1. 确定并清洗文件名
-            final_filename = filename
-            if not final_filename:
-                # 尝试从 Content-Disposition 提取
-                cd = resp.headers.get("content-disposition", "")
-                if "filename=" in cd:
-                    match = re.search(r'filename=["\']?([^"\';]+)["\']?', cd)
-                    if match: final_filename = match.group(1)
-                
-                if not final_filename:
-                    # 从 URL 路径提取
-                    path_str = urllib.parse.urlparse(url).path
-                    final_filename = path_str.split("/")[-1] or "downloaded_file"
-
-            # 移除非法字符
-            final_filename = re.sub(r'[\\/*?:"<>|]', '_', final_filename)
-            # Strip path traversal: only keep the basename
-            final_filename = Path(final_filename).name or "downloaded_file"
-            
-            # 2. 处理保存路径
-            if run_dir:
-                save_path = Path(run_dir) / final_filename
-            else:
-                save_path = Path(final_filename)
-                
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-                
-            # 3. 执行块写入 (Chunked Write)
-            total_bytes = 0
-            with open(save_path, "wb") as f:
-                async for chunk in resp.aiter_bytes(chunk_size=8192):
-                    f.write(chunk)
-                    total_bytes += len(chunk)
-            
-            emit_tool_observation("download_file", str(resp.status_code), f"size={total_bytes}", f"file={save_path.name}")
-            return f"[OK] 已保存 {total_bytes} 字节到 {save_path}"
-    except Exception as e:
-        logger.exception("下载文件失败: %s", url)
-        return f"[错误] {e}"
+async def fetch(
+    url: str,
+    method: str = "GET",
+    parse: str = "json",
+    headers: str | dict | None = None,
+    params: dict | str | None = None,
+    data: Any = None,
+    json: Any = None,
+    content: str | bytes | None = None,
+    cookies: dict | str | list | None = None,
+    **kwargs: Any,
+) -> Any:
+    """统一 HTTP 请求入口，优先使用此工具请求接口数据。"""
+    normalized_parse = (parse or "json").lower()
+    if normalized_parse == "json":
+        return await http_json(
+            url,
+            method=method,
+            headers=headers,
+            params=params,
+            data=data,
+            json=json,
+            content=content,
+            cookies=cookies,
+            **kwargs,
+        )
+    if normalized_parse in {"text", "raw"}:
+        return await http_request(
+            url,
+            method=method,
+            headers=headers,
+            params=params,
+            data=data,
+            json=json,
+            content=content,
+            cookies=cookies,
+            **kwargs,
+        )
+    raise ValueError(f"fetch(parse=...) 仅支持 json / text / raw，收到: {parse}")
 
 
 def register_http_tools(registry: ToolRegistry) -> None:
     """注册 HTTP 工具到 registry。"""
-    registry.register(http_request, category="网络 & 数据")
-    registry.register(http_json, category="网络 & 数据")
-    registry.register(download_file, category="网络 & 数据")
+    registry.register(fetch, category="网络 & 数据")
+    registry.register(http_request, category="网络 & 数据", expose_in_prompt=False)
+    registry.register(http_json, category="网络 & 数据", expose_in_prompt=False)

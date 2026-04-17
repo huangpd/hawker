@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import time
 
 import pytest
@@ -22,6 +23,12 @@ from hawker_agent.models.output import CodeAgentModelOutput
 from hawker_agent.models.result import CodeAgentResult
 from hawker_agent.models.state import CodeAgentState, TokenStats
 from hawker_agent.models.step import CodeAgentStepMetadata
+from hawker_agent.agent.runner import (
+    _build_namespace_skip_names,
+    _recover_items_from_final_answer,
+    _validate_final_answer_request,
+)
+from hawker_agent.agent.namespace import HawkerNamespace
 
 
 # ─── exceptions ─────────────────────────────────────────────────
@@ -190,6 +197,56 @@ class TestCodeAgentState:
     def test_checkpoint_files_default_empty(self) -> None:
         state = CodeAgentState()
         assert state.checkpoint_files == set()
+
+    def test_recover_items_from_final_answer_list(self) -> None:
+        payload = json.dumps([{"id": 1, "title": "A"}, {"id": 2, "title": "B"}], ensure_ascii=False)
+        items = _recover_items_from_final_answer(payload)
+        assert len(items) == 2
+        assert items[0]["id"] == 1
+
+    def test_recover_items_from_final_answer_items_wrapper(self) -> None:
+        payload = json.dumps({"items": [{"url": "https://a"}, {"url": "https://b"}]}, ensure_ascii=False)
+        items = _recover_items_from_final_answer(payload)
+        assert len(items) == 2
+        assert items[1]["url"] == "https://b"
+
+    def test_validate_final_answer_request_rejects_first_step(self) -> None:
+        state = CodeAgentState()
+        state.items.append([{"url": "https://a", "start": "1"}])
+        step_meta = CodeAgentStepMetadata(step_no=1, activity_before=0, progress_before=0)
+        reason = _validate_final_answer_request(1, state, step_meta)
+        assert reason is not None
+        assert "首步禁止直接完成" in reason
+
+    def test_validate_final_answer_request_rejects_first_collection_step(self) -> None:
+        state = CodeAgentState()
+        state.items.append([{"url": "https://a"}, {"url": "https://b"}])
+        state.activity_marker = 1
+        step_meta = CodeAgentStepMetadata(step_no=2, activity_before=0, progress_before=0)
+        reason = _validate_final_answer_request(2, state, step_meta)
+        assert reason is not None
+        assert "首次采集到数据" in reason
+
+    def test_validate_final_answer_request_allows_after_check_step(self) -> None:
+        state = CodeAgentState()
+        state.items.append(
+            [
+                {"url": "https://a", "start": 0, "fork": 0, "today_start": 10},
+                {"url": "https://b", "start": 0, "fork": 0, "today_start": 11},
+            ]
+        )
+        state.activity_marker = 1
+        step_meta = CodeAgentStepMetadata(step_no=3, activity_before=1, progress_before=1)
+        reason = _validate_final_answer_request(3, state, step_meta)
+        assert reason is None
+
+    def test_build_namespace_skip_names_uses_system_keys(self) -> None:
+        namespace = HawkerNamespace({"nav": object(), "fetch": object(), "json": object()}, "/tmp/run")
+        skip_names = _build_namespace_skip_names(namespace)
+        assert "nav" in skip_names
+        assert "fetch" in skip_names
+        assert "json" in skip_names
+        assert "run_dir" in skip_names
 
 
 # ─── CodeCell ───────────────────────────────────────────────────
@@ -408,6 +465,109 @@ class TestCodeAgentHistoryList:
         original_len = len(h)
         h.to_prompt_messages()
         assert len(h) == original_len
+
+    def test_inject_dom_moves_into_workspace_in_notebook_mode(self) -> None:
+        h = CodeAgentHistoryList.from_task("任务", "系统提示")
+        h.record_step(
+            step=1,
+            max_steps=5,
+            assistant_content="导航\n```python\nnav('https://example.com')\n```",
+            observation="[OK] 页面已加载",
+            namespace_view={},
+            items_count=0,
+            total_tokens=100,
+            max_total_tokens=1000,
+            progress=False,
+            had_error=False,
+            no_progress_steps=0,
+        )
+        h.inject_dom("[DOM Diff]\n- 新增区域: dialog")
+        msgs = h.to_prompt_messages()
+        assert any("[Notebook Workspace]" in m["content"] for m in msgs)
+        assert any("[DOM Workspace]" in m["content"] for m in msgs)
+        assert any("新增区域: dialog" in m["content"] for m in msgs)
+        assert all("[Browser State]" not in m["content"] for m in msgs)
+
+    def test_full_dom_workspace_folds_after_one_prompt(self) -> None:
+        h = CodeAgentHistoryList.from_task("任务", "系统提示")
+        h.record_step(
+            step=1,
+            max_steps=5,
+            assistant_content="导航\n```python\nnav('https://example.com')\n```",
+            observation="[OK] 页面已加载",
+            namespace_view={},
+            items_count=0,
+            total_tokens=100,
+            max_total_tokens=1000,
+            progress=False,
+            had_error=False,
+            no_progress_steps=0,
+        )
+        h.inject_browser_context(
+            "<html>very large dom</html>",
+            mode="full",
+            folded_content="[DOM Summary]\n交互元素: 12",
+        )
+        msgs_first = h.to_prompt_messages()
+        workspace_first = next(m["content"] for m in msgs_first if "[Notebook Workspace]" in m["content"])
+        assert "very large dom" in workspace_first
+        assert "[mode=full" in workspace_first
+
+        msgs_second = h.to_prompt_messages()
+        workspace_second = next(m["content"] for m in msgs_second if "[Notebook Workspace]" in m["content"])
+        assert "very large dom" not in workspace_second
+        assert "[DOM Summary]" in workspace_second
+        assert "[mode=summary" in workspace_second
+
+    def test_build_prompt_package_keeps_split_prompt_parts(self) -> None:
+        h = CodeAgentHistoryList.from_task("任务", "系统提示")
+        h.record_step(
+            step=1,
+            max_steps=5,
+            assistant_content="导航\n```python\nnav('https://example.com')\n```",
+            observation="[OK] 页面已加载",
+            namespace_view={"page_index": 1},
+            items_count=0,
+            total_tokens=100,
+            max_total_tokens=1000,
+            progress=False,
+            had_error=False,
+            no_progress_steps=0,
+        )
+        package = h.build_prompt_package()
+        assert package["mode"] == "notebook"
+        assert package["system_message"]["role"] == "system"
+        assert package["task_message"]["content"] == "任务"
+        assert "[Notebook Workspace]" in package["workspace_message"]["content"]
+        assert "runtime_snapshot" in package["workspace_sections"]
+        assert isinstance(package["source_history_messages"], list)
+        assert package["messages"][0]["role"] == "system"
+
+    def test_memory_workspace_is_rendered_in_notebook_mode(self) -> None:
+        h = CodeAgentHistoryList.from_task("打开 https://example.com", "系统提示")
+        h.record_step(
+            step=1,
+            max_steps=5,
+            assistant_content="导航\n```python\nawait nav('https://example.com')\n```",
+            observation="[OK] 页面已加载",
+            namespace_view={},
+            items_count=0,
+            total_tokens=100,
+            max_total_tokens=1000,
+            progress=False,
+            had_error=False,
+            no_progress_steps=0,
+        )
+        h.set_memory_workspace(
+            [
+                "- 站点经验: 列表页优先尝试 SSR DOM 提取",
+                "- 失败约束: 不要直接猜排序参数",
+            ]
+        )
+        workspace = h.build_prompt_package()["workspace_message"]["content"]
+        assert "[Memory Workspace]" in workspace
+        assert "列表页优先尝试 SSR DOM 提取" in workspace
+        assert "不要直接猜排序参数" in workspace
 
     def test_compress_stub_passthrough(self) -> None:
         h = CodeAgentHistoryList.from_task("任务", "系统提示")

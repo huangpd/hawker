@@ -4,6 +4,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 import nbformat
 from nbformat.v4 import new_code_cell, new_markdown_cell, new_notebook
@@ -13,8 +14,56 @@ from hawker_agent.models.cell import CodeCell
 logger = logging.getLogger(__name__)
 
 
+def _to_jsonable(value: Any) -> Any:
+    """将复杂对象转换为可 JSON 序列化的结构。
+
+    尝试处理 Path 对象、字典、列表、集合以及具有 model_dump 或 dict 方法的对象。
+
+    Args:
+        value (Any): 待转换的对象。
+
+    Returns:
+        Any: 转换后的可 JSON 序列化对象。
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(k): _to_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_to_jsonable(v) for v in value]
+    if hasattr(value, "model_dump"):
+        try:
+            return _to_jsonable(value.model_dump())  # type: ignore[union-attr]
+        except Exception:
+            pass
+    if hasattr(value, "dict"):
+        try:
+            return _to_jsonable(value.dict())  # type: ignore[union-attr]
+        except Exception:
+            pass
+    if hasattr(value, "__dict__"):
+        try:
+            return _to_jsonable(vars(value))
+        except Exception:
+            pass
+    return repr(value)
+
+
 def export_notebook(cells: list[CodeCell], task: str, run_dir: Path) -> Path:
-    """将执行历史导出为 Jupyter Notebook (.ipynb) 文件。"""
+    """将执行历史导出为 Jupyter Notebook (.ipynb) 文件。
+
+    将代理的每一步思考、代码执行及输出结果格式化为 Notebook 单元格。
+
+    Args:
+        cells (list[CodeCell]): 包含执行历史的单元格记录列表。
+        task (str): 原始任务描述。
+        run_dir (Path): 导出文件的保存目录。
+
+    Returns:
+        Path: 生成的 .ipynb 文件路径。
+    """
     nb = new_notebook()
     nb.metadata.kernelspec = {
         "display_name": "Python 3",
@@ -78,11 +127,21 @@ def save_result_json(
     answer: str,
     checkpoint_files: set[str] | None = None,
 ) -> Path:
-    """保存结果 JSON 文件，并清理 checkpoint。"""
-    path = run_dir / "result.json"
-    
-    # 提示：result.json 的 'result' 字段应仅作为语义总结。
-    # 如果 answer 过长（可能包含冗余样本或大块文本），进行摘要式截断。
+    """保存最终结果为 JSON 文件，并清理中间检查点。
+
+    Args:
+        run_dir (Path): 结果文件的保存目录。
+        items (list[dict]): 采集到的所有数据项。
+        answer (str): 任务的最终摘要回答。
+        checkpoint_files (set[str] | None, optional): 待清理的中间检查点文件集合。
+
+    Returns:
+        Path: 生成的 result.json 文件路径。
+    """
+    result_dir = run_dir / "result"
+    result_dir.mkdir(parents=True, exist_ok=True)
+    path = result_dir / "result.json"
+
     summary = answer
     if len(answer) > 2000:
         summary = answer[:1990] + "... [摘要已截断，详见 items 字段]"
@@ -96,7 +155,7 @@ def save_result_json(
         json.dump(data, f, ensure_ascii=False, indent=2)
     logger.info("结果已保存: %s (%d 条数据)", path, len(items))
 
-    # result.json 已包含完整数据，清理 checkpoint 文件
+    # 正式 result.json 已包含完整数据，清理 run_dir 根目录下的 checkpoint 文件
     for fname in checkpoint_files or set():
         ckpt = run_dir / fname
         if ckpt.resolve() == path.resolve():
@@ -106,4 +165,31 @@ def save_result_json(
             os.remove(ckpt)
             logger.debug("已清理 checkpoint: %s", ckpt)
 
+    return path
+
+
+def save_llm_io_json(
+    run_dir: Path,
+    task: str,
+    records: list[dict[str, Any]],
+) -> Path:
+    """保存单次任务的完整 LLM 输入输出交互记录。
+
+    Args:
+        run_dir (Path): 运行目录。
+        task (str): 任务描述。
+        records (list[dict[str, Any]]): 每一步的交互详情记录。
+
+    Returns:
+        Path: 导出的 llm_io.json 文件路径。
+    """
+    path = run_dir / "llm_io.json"
+    payload = {
+        "task": task,
+        "steps": len(records),
+        "records": _to_jsonable(records),
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    logger.info("LLM 输入输出记录已保存: %s", path)
     return path

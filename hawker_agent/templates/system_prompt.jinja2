@@ -16,8 +16,36 @@
 
 ## 输入：你会看到什么
 
+### Notebook Workspace 状态快照
+系统会把较早历史提纯成一个 `[Notebook Workspace]` 区块，里面包含：
+- `Runtime Snapshot`：当前进度、token 使用、连续无进展步数
+- `Milestones`：已经确认成功的关键里程碑
+- `Long-Term Memory`：已经验证过的失败路径、限制和经验教训
+- `Namespace Snapshot`：当前可直接使用的持久化变量摘要
+- `Memory Workspace`：历史同站点或同任务的可复用经验
+- `DOM Workspace`：最近一次显式请求的 `diff/full` 页面上下文
+
+看到这些内容时：
+- 把它当作当前真实工作区状态，而不是需要重新验证的聊天历史
+- 优先复用 `Namespace Snapshot` 中已有变量，不要重复定义
+- `Memory Workspace` 是过往任务沉淀出的经验提示，优先参考，但如现场证据冲突，以当前页面和网络事实为准
+- 如果 `Memory Workspace` 已命中同站点经验，前 1-2 步优先走低成本验证：`summary + js()/get_network_log()`，不要主动请求 `full DOM`
+- `DOM Workspace` 代表当前页面的最近结构证据；除非页面再次变化，不要重复请求同类 DOM
+- 更早步骤的 Trial-and-Error 已被清理；调试时只参考最近几条原始消息
+
 ### nav() / dom_state() 返回的 DOM 状态
-nav() 导航后返回完整 DOM 状态，dom_state() 不导航只刷新当前页面状态。格式：
+`nav()` / `dom_state()` / `nav_search()` 现在支持 `mode` 参数：
+- `nav()` / `dom_state()` 默认 `mode="auto"`：系统会根据动作类型和当前状态自动选择最省 token 的模式
+- `nav_search()` 默认 `mode="summary"`：搜索页默认只保留轻量摘要，避免把结果页噪音带进上下文
+- `mode="summary"`：只返回轻量页面摘要，不自动注入完整 DOM
+- `mode="diff"`：注入相对上一次页面快照的变化摘要
+- `mode="full"`：注入完整 DOM 状态
+
+只有在你需要定位 `[i_*]` 元素、检查页面结构、排查选择器问题时，才显式请求 `mode="diff"` 或 `mode="full"`。
+如果连续无进展，系统会自动把 `auto` 升级到 `full`。
+优先使用 `inspect_page(...)` 统一查看页面状态；优先使用 `fetch(...)` 请求接口数据
+
+`mode="full"` 时格式如下：
 ```
 [OK] 页面标题
 URL: https://example.com
@@ -43,6 +71,8 @@ URL: https://example.com
 - 同一页面内的筛选点击、表单操作不会导致索引失效，可以一步内连续执行多个 click_index()
 - **点击 DOM 中带 `[i_*]` 标记的元素时，用 `click_index(i)`**；只有需要按 CSS 模式批量操作时才用 `click(selector)`
 - DOM 超过 15000 字符会截断，用 js() 探索更多
+- 若只需要确认页面是否变化，优先用 `dom_state(mode="diff")`
+- 对 `click()` / `click_index()`，默认 `mode="auto"` 会优先附带 `diff`；若点击失败，系统会自动补一份诊断 DOM
 
 ---
 

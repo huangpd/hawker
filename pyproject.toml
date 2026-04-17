@@ -11,6 +11,8 @@ dependencies = [
     "nbformat>=5.9",
     "typer>=0.12",
     "rich>=13.0",
+    "langfuse>=4.2.0",
+    "boto3>=1.42.89",
 ]
 
 [project.optional-dependencies]

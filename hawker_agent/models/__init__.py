@@ -1,3 +1,7 @@
+"""代理数据模型。
+
+包含代理运行期间使用的所有核心数据结构，包括状态管理、历史记录、执行结果、采集项以及追踪模型等。
+"""
 from __future__ import annotations
 
 from hawker_agent.models.cell import CellStatus, CodeCell

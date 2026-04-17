@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     openai_base_url: str | None = None
     model_name: str
     reasoning_effort: str = ""
+    small_model_name: str | None = None
+    healer_enabled: bool = True
+    healer_reasoning_effort: str = ""
+    healer_max_attempts: int = 3
+    final_evaluator_enabled: bool = True
+    final_evaluator_reasoning_effort: str = ""
     langfuse_public_key: str | None = None
     langfuse_secret_key: str | None = None
     langfuse_base_url: str | None = None
@@ -48,7 +54,8 @@ class Settings(BaseSettings):
     langfuse_release: str = ""
 
     # 预算控制
-    max_total_tokens: int = 120_000
+    max_steps: int = 25
+    max_total_tokens: int = 200_000
     max_no_progress_steps: int = 10
     message_compression_tokens: int = 12_000
 

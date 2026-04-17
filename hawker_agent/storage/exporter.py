@@ -172,6 +172,8 @@ def save_llm_io_json(
     run_dir: Path,
     task: str,
     records: list[dict[str, Any]],
+    healing_records: list[dict[str, Any]] | None = None,
+    evaluator_records: list[dict[str, Any]] | None = None,
 ) -> Path:
     """保存单次任务的完整 LLM 输入输出交互记录。
 
@@ -188,6 +190,8 @@ def save_llm_io_json(
         "task": task,
         "steps": len(records),
         "records": _to_jsonable(records),
+        "healing_records": _to_jsonable(healing_records or []),
+        "evaluator_records": _to_jsonable(evaluator_records or []),
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)

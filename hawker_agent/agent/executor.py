@@ -12,6 +12,7 @@ import traceback
 from typing import TYPE_CHECKING
 
 from hawker_agent.agent.compressor import truncate_output
+from hawker_agent.agent.healer import try_heal_code
 from hawker_agent.observability import collect_observations, trace
 
 if TYPE_CHECKING:
@@ -108,6 +109,7 @@ async def execute(
     namespace: HawkerNamespace,
     state: CodeAgentState | None = None,
     step: int | None = None,
+    _healing_depth: int = 0,
 ) -> str:
     """使用原生的顶层 await 执行 Python 代码。
 
@@ -218,6 +220,23 @@ async def execute(
                     error_msg = f"[执行错误]\n{tb}"
                     if hints:
                         error_msg += "\n" + "\n".join(hints)
+
+                    if state is not None:
+                        healed_code = await try_heal_code(
+                            code=code,
+                            error=error_msg,
+                            namespace=namespace,
+                            state=state,
+                        )
+                        if healed_code and _healing_depth < 3:
+                            logger.info("代码执行失败，进入 Healing 重试: step=%s depth=%d", step, _healing_depth + 1)
+                            return await execute(
+                                healed_code,
+                                namespace,
+                                state=state,
+                                step=step,
+                                _healing_depth=_healing_depth + 1,
+                            )
 
                     final_output = truncate_output(error_msg)
 

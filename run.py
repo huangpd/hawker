@@ -78,29 +78,7 @@ TASK="""
 步骤2: 找到下一页按钮，获取前10页数据 ，分类点击 "搜索工具",认证状态点击“不限”，编程语言是“python”，类型 “MCP Server”，点击按“按下载量”排序
 步骤3:提取所有项目名称、简介、url
 """
-TASK="""
-1.获取content里提到的的论文下载链接（缺少部分应该网络搜索补全），摘要，研究领域,返回json
-content='''
-[86] Lutfi Eren Erdogan, Hiroki Furuta, Sehoon Kim, Nicholas Lee, Suhong Moon, Gopala Anumanchipalli, Kurt Keutzer, and Amir Gholami. Plan-and-Act: Improving planning of agents
-for long-horizon tasks. In Forty-second International Conference on Machine Learning, 2025.
-URL https://openreview.net/forum?id=ybA4EcMmUZ.
-[87] Jae-Woo Choi, Hyungmin Kim, Hyobin Ong, Youngwoo Yoon, Minsu Jang, Jaehong Kim, et al.
-Reactree: Hierarchical task planning with dynamic tree expansion using llm agent nodes. 2025.
-[88] Siddharth Nayak, Adelmo Morrison Orozco, Marina Ten Have, Vittal Thirumalai, Jackson
-Zhang, Darren Chen, Aditya Kapoor, Eric Robinson, Karthik Gopalakrishnan, James Harrison, et al. LLaMAR: Long-horizon planning for multi-agent robots in partially observable
-environments. arXiv preprint arXiv:2407.10031, 2024.
-[89] Anthropic. Model Context Protocol (MCP), 2024. URL https://www.anthropic.com/news
-/model-context-protocol.
-[90] Yingxuan Yang, Huacan Chai, Yuanyi Song, Siyuan Qi, Muning Wen, Ning Li, Junwei Liao,
-Haoyi Hu, Jianghao Lin, Gaowei Chang, Weiwen Liu, Ying Wen, Yong Yu, and Weinan Zhang.
-A survey of AI agent protocols, 2025. URL https://arxiv.org/abs/2504.16736.
-[91] Yu Wang and Xi Chen. Mirix: Multi-agent memory system for llm-based agents, 2025. URL
-https://arxiv.org/abs/2507.07957.
-[92] Kai Mei, Xi Zhu, Wujiang Xu, Wenyue Hua, Mingyu Jin, Zelong Li, Shuyuan Xu, Ruosong
-Ye, Yingqiang Ge, and Yongfeng Zhang. Aios: Llm agent operating system. arXiv preprint
-arXiv:2403.16971, 2024.
-'''
-"""
+
 
 TASK='''
 1.打开 https://kns.cnki.net/kns8s/AdvSearch，点击专业检索
@@ -130,7 +108,22 @@ TASK="""
 - today_start: today_start数
 """
 TASK="""
-步骤1: 打开 https://www.ahnews.com.cn/df/hss/pc/lay/node_525.html,点击"下一页"，获取3页数据,获取列表页URL和title 
+步骤1: 打开 https://www.ahnews.com.cn/df/hss/pc/lay/node_525.html,点击"下一页"，获取30页数据,获取列表页URL和title 
+"""
+TASK="""
+1.获取content里提到的的论文，论文下载链接（缺少部分应该网络搜索补全，最好pdf），摘要，研究领域,返回json
+content='''
+[87] Jae-Woo Choi, Hyungmin Kim, Hyobin Ong, Youngwoo Yoon, Minsu Jang, Jaehong Kim, et al.
+Reactree: Hierarchical task planning with dynamic tree expansion using llm agent nodes. 2025.
+[88] Siddharth Nayak, Adelmo Morrison Orozco, Marina Ten Have, Vittal Thirumalai, Jackson
+Zhang, Darren Chen, Aditya Kapoor, Eric Robinson, Karthik Gopalakrishnan, James Harrison, et al. LLaMAR: Long-horizon planning for multi-agent robots in partially observable
+environments. arXiv preprint arXiv:2407.10031, 2024.
+[89] Anthropic. Model Context Protocol (MCP), 2024. URL https://www.anthropic.com/news
+/model-context-protocol.
+[90] Yingxuan Yang, Huacan Chai, Yuanyi Song, Siyuan Qi, Muning Wen, Ning Li, Junwei Liao,
+Haoyi Hu, Jianghao Lin, Gaowei Chang, Weiwen Liu, Ying Wen, Yong Yu, and Weinan Zhang.
+A survey of AI agent protocols, 2025. URL https://arxiv.org/abs/2504.16736.
+'''
 """
 # =================================================================
 
@@ -155,7 +148,7 @@ async def main():
     with Live(Spinner("dots", text="[yellow] Agent 正在思考并执行中...[/yellow]"), refresh_per_second=10, console=console):
         try:
             # 调用重构后的核心入口
-            result = await run(TASK, max_steps=20)
+            result = await run(TASK, max_steps=cfg.max_steps)
         except Exception as e:
             console.print(f"\n[red]💥 运行过程中发生崩溃: {e}[/red]")
             import traceback

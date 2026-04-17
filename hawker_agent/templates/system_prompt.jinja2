@@ -36,7 +36,7 @@
 ### nav() / dom_state() 返回的 DOM 状态
 `nav()` / `dom_state()` / `nav_search()` 现在支持 `mode` 参数：
 - `nav()` / `dom_state()` 默认 `mode="auto"`：系统会根据动作类型和当前状态自动选择最省 token 的模式
-- `nav_search()` 默认 `mode="summary"`：搜索页默认只保留轻量摘要，避免把结果页噪音带进上下文
+- `nav_search()` 默认 `mode="full"`
 - `mode="summary"`：只返回轻量页面摘要，不自动注入完整 DOM
 - `mode="diff"`：注入相对上一次页面快照的变化摘要
 - `mode="full"`：注入完整 DOM 状态

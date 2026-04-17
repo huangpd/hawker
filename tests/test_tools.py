@@ -312,6 +312,35 @@ def test_save_llm_io_json_serializes_complex_payload(tmp_path: Path) -> None:
     assert data["records"][0]["llm_response"]["raw"]["value"] == "ok"
 
 
+def test_save_llm_io_json_redacts_sensitive_fields_and_non_serializable_values(tmp_path: Path) -> None:
+    path = save_llm_io_json(
+        tmp_path,
+        "测试任务",
+        records=[
+            {
+                "step": 1,
+                "prompt": {
+                    "headers": {
+                        "Authorization": "Bearer secret-token",
+                        "x-test": "ok",
+                    },
+                    "cookies": [{"name": "sid", "value": "abc"}],
+                },
+                "llm_response": {
+                    "raw": object(),
+                },
+            }
+        ],
+    )
+
+    data = json_mod.loads(path.read_text(encoding="utf-8"))
+    record = data["records"][0]
+    assert record["prompt"]["headers"]["Authorization"] == "***redacted***"
+    assert record["prompt"]["headers"]["x-test"] == "ok"
+    assert record["prompt"]["cookies"] == "***redacted***"
+    assert record["llm_response"]["raw"] == "<non-serializable:object>"
+
+
 class TestHttpTools:
     @pytest.mark.asyncio
     async def test_http_request_uses_httpx_style_json_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -329,7 +358,14 @@ class TestHttpTools:
                 captured.update(kwargs)
                 return DummyResponse()
 
-        monkeypatch.setattr("hawker_agent.tools.http_tools._get_client", lambda: DummyClient())
+        async def fake_get_client() -> DummyClient:
+            return DummyClient()
+
+        async def fake_validate_url(url: str) -> None:
+            return None
+
+        monkeypatch.setattr("hawker_agent.tools.http_tools._get_client", fake_get_client)
+        monkeypatch.setattr("hawker_agent.tools.http_tools._validate_url", fake_validate_url)
 
         raw = await http_request(
             "https://example.com/api",
@@ -358,7 +394,14 @@ class TestHttpTools:
                 captured.update(kwargs)
                 return DummyResponse()
 
-        monkeypatch.setattr("hawker_agent.tools.http_tools._get_client", lambda: DummyClient())
+        async def fake_get_client() -> DummyClient:
+            return DummyClient()
+
+        async def fake_validate_url(url: str) -> None:
+            return None
+
+        monkeypatch.setattr("hawker_agent.tools.http_tools._get_client", fake_get_client)
+        monkeypatch.setattr("hawker_agent.tools.http_tools._validate_url", fake_validate_url)
 
         data = await http_json(
             "https://example.com/api",
@@ -370,7 +413,13 @@ class TestHttpTools:
         assert captured["content"] == '{"page": 1}'
 
     @pytest.mark.asyncio
-    async def test_http_request_rejects_ambiguous_payload(self) -> None:
+    async def test_http_request_rejects_ambiguous_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        async def fake_validate_url(url: str) -> None:
+            return None
+
+        from hawker_agent.tools import http_tools as http_tools_module
+        monkeypatch.setattr(http_tools_module, "_validate_url", fake_validate_url)
+
         raw = await http_request(
             "https://example.com/api",
             method="POST",
@@ -380,3 +429,17 @@ class TestHttpTools:
 
         assert raw.startswith("[错误]")
         assert "json/data/content/body" in raw
+
+    @pytest.mark.asyncio
+    async def test_validate_url_rejects_private_ip_resolved_from_dns(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from hawker_agent.tools import http_tools as http_tools_module
+
+        async def fake_resolve_host_ips(hostname: str, port: int | None) -> set[str]:
+            assert hostname == "example.com"
+            assert port == 443
+            return {"169.254.169.254"}
+
+        monkeypatch.setattr(http_tools_module, "_resolve_host_ips", fake_resolve_host_ips)
+
+        with pytest.raises(ValueError, match="private/reserved IP via DNS"):
+            await http_tools_module._validate_url("https://example.com/data")

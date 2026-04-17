@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json as json_lib
 import logging
+import socket
 import urllib.parse as _urlparse
 from typing import Any
 
@@ -14,7 +16,7 @@ from hawker_agent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
-_client: httpx.AsyncClient | None = None
+_clients_by_loop: dict[int, httpx.AsyncClient] = {}
 
 
 _BLOCKED_HOSTS = {
@@ -32,7 +34,33 @@ def _is_private_ip(host: str) -> bool:
         return False
 
 
-def _validate_url(url: str) -> None:
+def _default_port_for_scheme(scheme: str) -> int | None:
+    """为常见协议返回默认端口，供 DNS 校验时使用。"""
+    normalized = (scheme or "").lower()
+    if normalized == "http":
+        return 80
+    if normalized == "https":
+        return 443
+    return None
+
+
+async def _resolve_host_ips(hostname: str, port: int | None) -> set[str]:
+    """解析主机名并返回去重后的 IP 集合。"""
+    loop = asyncio.get_running_loop()
+    infos = await loop.getaddrinfo(
+        hostname,
+        port,
+        type=socket.SOCK_STREAM,
+        proto=socket.IPPROTO_TCP,
+    )
+    return {
+        sockaddr[0]
+        for _family, _socktype, _proto, _canonname, sockaddr in infos
+        if sockaddr
+    }
+
+
+async def _validate_url(url: str) -> None:
     """Block requests to private networks, cloud metadata endpoints, and other reserved ranges."""
     parsed = _urlparse.urlparse(url)
     hostname = (parsed.hostname or "").lower().strip(".")
@@ -42,14 +70,33 @@ def _validate_url(url: str) -> None:
         raise ValueError(f"Blocked request to reserved host: {hostname}")
     if _is_private_ip(hostname):
         raise ValueError(f"Blocked request to private/reserved IP: {hostname}")
+    try:
+        resolved_ips = await _resolve_host_ips(hostname, parsed.port or _default_port_for_scheme(parsed.scheme))
+    except socket.gaierror as exc:
+        raise ValueError(f"Failed to resolve hostname: {hostname}") from exc
+    for ip in resolved_ips:
+        if _is_private_ip(ip):
+            raise ValueError(f"Blocked request to private/reserved IP via DNS: {hostname} -> {ip}")
 
 
-def _get_client() -> httpx.AsyncClient:
-    """延迟创建 httpx 异步客户端单例。"""
-    global _client  # noqa: PLW0603
-    if _client is None or _client.is_closed:
-        _client = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
-    return _client
+async def _get_client() -> httpx.AsyncClient:
+    """按 event loop 复用 httpx 异步客户端，避免跨 loop 复用已绑定客户端。"""
+    loop = asyncio.get_running_loop()
+    loop_id = id(loop)
+    client = _clients_by_loop.get(loop_id)
+    if client is None or client.is_closed:
+        client = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
+        _clients_by_loop[loop_id] = client
+    return client
+
+
+async def close_http_clients() -> None:
+    """关闭当前进程内缓存的所有 httpx 客户端。"""
+    clients = list(_clients_by_loop.values())
+    _clients_by_loop.clear()
+    for client in clients:
+        if not client.is_closed:
+            await client.aclose()
 
 
 def _parse_cookies(cookies_input: dict | str | list | None) -> dict | None:
@@ -155,8 +202,8 @@ async def http_request(
         except Exception:
             query_params = params
 
-    _validate_url(url)
-    client = _get_client()
+    await _validate_url(url)
+    client = await _get_client()
     try:
         request_data, request_json, request_content = _build_request_payload(
             data=data,
@@ -213,13 +260,13 @@ async def http_json(
     )
     status, text = parse_http_response(raw)
     ensure(200 <= status < 300, f"HTTP {status}: {text[:200]}")
-    data = json_lib.loads(text)
-    if isinstance(data, list):
-        data = clean_items(data)
-    
-    count = len(data) if isinstance(data, (list, dict)) else 1
-    emit_tool_observation("http_json", "OK", f"items={count}", summarize_json(data))
-    return data
+    parsed = json_lib.loads(text)
+    if isinstance(parsed, list):
+        parsed = clean_items(parsed)
+
+    count = len(parsed) if isinstance(parsed, (list, dict)) else 1
+    emit_tool_observation("http_json", "OK", f"items={count}", summarize_json(parsed))
+    return parsed
 
 
 async def fetch(

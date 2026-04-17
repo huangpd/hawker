@@ -13,6 +13,26 @@ from hawker_agent.models.cell import CodeCell
 
 logger = logging.getLogger(__name__)
 
+_SENSITIVE_KEYWORDS = (
+    "authorization",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "cookie",
+    "session",
+    "api_key",
+    "apikey",
+    "access_key",
+    "refresh_key",
+)
+
+
+def _is_sensitive_key(key: str) -> bool:
+    """判断一个字段名是否应在导出时脱敏。"""
+    normalized = key.strip().lower()
+    return any(keyword in normalized for keyword in _SENSITIVE_KEYWORDS)
+
 
 def _to_jsonable(value: Any) -> Any:
     """将复杂对象转换为可 JSON 序列化的结构。
@@ -30,7 +50,14 @@ def _to_jsonable(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, dict):
-        return {str(k): _to_jsonable(v) for k, v in value.items()}
+        jsonable: dict[str, Any] = {}
+        for k, v in value.items():
+            key = str(k)
+            if _is_sensitive_key(key):
+                jsonable[key] = "***redacted***"
+            else:
+                jsonable[key] = _to_jsonable(v)
+        return jsonable
     if isinstance(value, (list, tuple, set)):
         return [_to_jsonable(v) for v in value]
     if hasattr(value, "model_dump"):
@@ -48,7 +75,7 @@ def _to_jsonable(value: Any) -> Any:
             return _to_jsonable(vars(value))
         except Exception:
             pass
-    return repr(value)
+    return f"<non-serializable:{type(value).__name__}>"
 
 
 def export_notebook(cells: list[CodeCell], task: str, run_dir: Path) -> Path:

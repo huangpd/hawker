@@ -7,36 +7,6 @@ from typing import Any
 
 
 @dataclass
-class MemoryNote:
-    """里程碑/经验教训的高密度长期记忆条目。
-
-    Attributes:
-        step_start (int): 该记录覆盖的起始步骤序号。
-        step_end (int): 该记录覆盖的结束步骤序号。
-        category (str): 记录所属分类（如 login, api, extract 等）。
-        summary (str): 核心内容简要说明。
-    """
-
-    step_start: int
-    step_end: int
-    category: str
-    summary: str
-
-    def render(self) -> str:
-        """渲染单条记忆条目为文本。
-
-        Returns:
-            str: 格式化后的字符串。
-        """
-        span = (
-            f"Step {self.step_start}"
-            if self.step_start == self.step_end
-            else f"Step {self.step_start}-{self.step_end}"
-        )
-        return f"- {span} [{self.category}] {self.summary}"
-
-
-@dataclass
 class DOMWorkspaceEntry:
     """DOM Workspace 的可衰减上下文条目。
 
@@ -96,14 +66,12 @@ class CodeAgentHistoryList:
         _task (str): 原始任务描述。
         _notebook_mode_enabled (bool): 是否开启 Notebook 模式。
         _recent_message_window (int): 在 Notebook 模式中保留的最近原始消息数量。
-        _max_milestones (int): 最大里程碑存储数量。
-        _max_lessons (int): 最大经验教训存储数量。
         _runtime_snapshot (str): 当前运行时快照文本。
         _namespace_snapshot (str): 命名空间快照文本。
         _memory_workspace (list[str]): 召回到的站点经验和策略记忆。
         _dom_workspace (DOMWorkspaceEntry | None): 增量 DOM 工作区。
-        _milestones (list[MemoryNote]): 存储的里程碑。
-        _lessons (list[MemoryNote]): 存储的经验教训。
+        _milestones (list[str]): 最近确认过的有效进展摘要。
+        _lessons (list[str]): 最近的失败或卡住经验摘要。
     """
 
     _system_prompt: str = ""
@@ -120,8 +88,8 @@ class CodeAgentHistoryList:
     _namespace_snapshot: str = ""
     _memory_workspace: list[str] = field(default_factory=list)
     _dom_workspace: DOMWorkspaceEntry | None = None
-    _milestones: list[MemoryNote] = field(default_factory=list)
-    _lessons: list[MemoryNote] = field(default_factory=list)
+    _milestones: list[str] = field(default_factory=list)
+    _lessons: list[str] = field(default_factory=list)
 
     @classmethod
     def from_task(
@@ -258,8 +226,8 @@ class CodeAgentHistoryList:
                 "source_history_messages": list(self._messages),
                 "workspace_sections": {
                     "runtime_snapshot": self._runtime_snapshot or "尚未执行任何步骤。",
-                    "milestones": [note.render() for note in self._milestones],
-                    "long_term_memory": [note.render() for note in self._lessons],
+                    "milestones": list(self._milestones),
+                    "long_term_memory": list(self._lessons),
                     "namespace_snapshot": self._namespace_snapshot or "无持久化变量。",
                     "memory_workspace": list(self._memory_workspace),
                     "dom_workspace": self._dom_workspace.render() if self._dom_workspace else "暂无页面增量上下文。",
@@ -339,7 +307,6 @@ class CodeAgentHistoryList:
         )
         self._namespace_snapshot = build_namespace_snapshot(namespace_view)
         self._update_long_term_memory(
-            step=step,
             assistant_content=assistant_content,
             observation=observation,
             progress=progress,
@@ -394,10 +361,8 @@ class CodeAgentHistoryList:
         Returns:
             str: 格式化后的工作区内容。
         """
-        milestone_lines = [note.render() for note in self._milestones] or ["- 暂无已确认里程碑"]
-        lesson_lines = [note.render() for note in self._lessons] or ["- 暂无失败经验"]
-        milestones_text = "\n".join(milestone_lines)
-        lessons_text = "\n".join(lesson_lines)
+        milestones_text = "\n".join(self._milestones or ["- 暂无已确认里程碑"])
+        lessons_text = "\n".join(self._lessons or ["- 暂无失败经验"])
         memory_lines = self._memory_workspace or ["- 暂无站点经验记忆"]
         memory_text = "\n".join(memory_lines)
         dom_workspace_text = self._dom_workspace.render() if self._dom_workspace else "暂无页面增量上下文。"
@@ -442,7 +407,6 @@ class CodeAgentHistoryList:
     def _update_long_term_memory(
         self,
         *,
-        step: int,
         assistant_content: str,
         observation: str,
         progress: bool,
@@ -452,7 +416,6 @@ class CodeAgentHistoryList:
         """基于当前步骤结果更新长期记忆（里程碑和经验教训）。
 
         Args:
-            step (int): 当前步骤。
             assistant_content (str): 助手指令内容。
             observation (str): 观察输出内容。
             progress (bool): 是否有进展。
@@ -465,13 +428,12 @@ class CodeAgentHistoryList:
         parsed = parse_response(assistant_content)
         thought = format_preview(parsed.thought or "未提供分析", 120)
         observation_summary = semantic_observation_preview(observation, 260)
-        category = self._categorize_note(f"{parsed.thought}\n{parsed.code}\n{observation}")
 
         if progress:
             milestone = observation_summary if observation_summary != "[无输出]" else thought
             self._append_note(
                 self._milestones,
-                MemoryNote(step_start=step, step_end=step, category=category, summary=milestone),
+                f"- {milestone}",
                 self._max_milestones,
             )
 
@@ -479,7 +441,7 @@ class CodeAgentHistoryList:
             lesson = f"{thought} -> {observation_summary}"
             self._append_note(
                 self._lessons,
-                MemoryNote(step_start=step, step_end=step, category=category, summary=lesson),
+                f"- {lesson}",
                 self._max_lessons,
             )
             return
@@ -488,52 +450,20 @@ class CodeAgentHistoryList:
             lesson = f"{thought} -> 连续无进展，最近 Observation: {observation_summary}"
             self._append_note(
                 self._lessons,
-                MemoryNote(step_start=step, step_end=step, category=category, summary=lesson),
+                f"- {lesson}",
                 self._max_lessons,
             )
 
     @staticmethod
-    def _categorize_note(text: str) -> str:
-        """根据文本内容对记忆条目进行分类。
-
-        Args:
-            text (str): 原始文本内容。
-
-        Returns:
-            str: 识别出的类别标签。
-        """
-        lowered = text.lower()
-        keyword_groups = {
-            "login": ("login", "cookie", "captcha", "验证码", "登录"),
-            "api": ("api", "http", "network", "xhr", "fetch", "接口"),
-            "extract": ("append_items", "提取", "采集", "schema", "样本", "json"),
-            "navigation": ("nav", "click", "tab", "page", "列表页", "跳转", "翻页"),
-            "download": ("download", "checkpoint", "保存", "文件"),
-            "error": ("error", "exception", "traceback", "失败", "超时", "403", "选择器"),
-        }
-        for label, keywords in keyword_groups.items():
-            if any(keyword in lowered for keyword in keywords):
-                return label
-        return "general"
-
-    @staticmethod
-    def _append_note(notes: list[MemoryNote], note: MemoryNote, max_size: int) -> None:
-        """向记忆列表中追加新条目，处理相邻相似类别的合并，并维护最大列表容量。
-
-        Args:
-            notes (list[MemoryNote]): 目标记忆列表。
-            note (MemoryNote): 待追加的新记忆条目。
-            max_size (int): 列表允许的最大容量。
-        """
-        if notes and notes[-1].category == note.category and note.step_start <= notes[-1].step_end + 2:
-            notes[-1].step_end = note.step_end
-            notes[-1].summary = note.summary
-        else:
-            notes.append(note)
+    def _append_note(notes: list[str], note: str, max_size: int) -> None:
+        """向简化后的记忆列表追加新条目，并维护最大容量。"""
+        if notes and notes[-1] == note:
+            return
+        notes.append(note)
         if len(notes) > max_size:
             del notes[:-max_size]
 
-    def export_memory_notes(self) -> dict[str, list[MemoryNote]]:
+    def export_memory_notes(self) -> dict[str, list[str]]:
         """导出当前任务沉淀出的里程碑和经验教训。"""
         return {
             "milestones": list(self._milestones),

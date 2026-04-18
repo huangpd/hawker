@@ -7,12 +7,11 @@ from hawker_agent.agent.evaluator import (
     build_final_evaluation_messages,
     extract_task_requirements,
 )
-from hawker_agent.agent.final_delivery import collect_recent_observations
 from hawker_agent.models.state import CodeAgentState
 
 
 class TestEvaluator:
-    def test_extract_task_requirements_from_field_block(self) -> None:
+    def test_extract_task_requirements_defaults_to_summary_delivery(self) -> None:
         requirements = extract_task_requirements(
             """
             1. 打开页面
@@ -23,27 +22,23 @@ class TestEvaluator:
             返回前 5 条
             """
         )
-        assert requirements.required_fields == ["title", "URL", "abstract"]
-        assert requirements.expected_count_hint == 5
-        assert requirements.expects_inline_json is False
         assert requirements.delivery_mode == "summary_with_structured_items"
+        assert requirements.expected_output_format is None
 
     def test_extract_task_requirements_detects_inline_json(self) -> None:
         requirements = extract_task_requirements(
             "请提取 `title` 和 `url`，并直接返回 JSON"
         )
-        assert requirements.required_fields == ["title", "url"]
-        assert requirements.expects_inline_json is True
         assert requirements.delivery_mode == "inline_json"
         assert requirements.expected_output_format == "json"
 
-    def test_extract_task_requirements_detects_markdown(self) -> None:
+    def test_extract_task_requirements_no_longer_guesses_markdown(self) -> None:
         requirements = extract_task_requirements("请整理成 Markdown 返回，并保留二级标题")
-        assert requirements.expected_output_format == "markdown"
+        assert requirements.expected_output_format is None
 
-    def test_extract_task_requirements_defaults_to_text(self) -> None:
+    def test_extract_task_requirements_no_longer_guesses_text(self) -> None:
         requirements = extract_task_requirements("请给我一个纯文本总结，不要 Markdown")
-        assert requirements.expected_output_format == "text"
+        assert requirements.expected_output_format is None
 
     def test_parse_final_evaluation_json(self) -> None:
         result = _parse_final_evaluation('{"accept": false, "reason": "样本字段缺失"}')
@@ -72,26 +67,6 @@ class TestEvaluator:
         assert "summary_with_structured_items" in messages[1]["content"]
         assert "不能因为样本条数少于 items_count 就拒绝" in messages[0]["content"]
         assert "优先依据任务要求验收产出物" in messages[0]["content"]
-
-    def test_collect_recent_observations(self) -> None:
-        state = CodeAgentState()
-        state.llm_records = [
-            {"execution": {"observation": "第一页 20 条"}},
-            {"execution": {"observation": ""}},
-            {"execution": {"observation": "第二页 18 条"}},
-        ]
-        observations = collect_recent_observations(state, limit=2)
-        assert observations == ["第一页 20 条", "第二页 18 条"]
-
-    def test_collect_recent_observations_skips_error_noise(self) -> None:
-        state = CodeAgentState()
-        state.llm_records = [
-            {"execution": {"observation": "[执行错误]\nNameError: x"}},
-            {"execution": {"observation": "未找到 ```python``` 代码块"}},
-            {"execution": {"observation": "已保存 7 条数据"}},
-        ]
-        observations = collect_recent_observations(state, limit=2)
-        assert observations == ["已保存 7 条数据"]
 
     @pytest.mark.asyncio
     async def test_final_evaluator_does_not_force_temperature(self, monkeypatch: pytest.MonkeyPatch) -> None:

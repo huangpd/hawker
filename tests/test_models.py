@@ -26,8 +26,6 @@ from hawker_agent.models.step import CodeAgentStepMetadata
 from hawker_agent.agent.final_delivery import (
     recover_items_from_final_answer,
     replace_state_items,
-    resolve_final_delivery_items,
-    validate_final_answer_request,
 )
 from hawker_agent.agent.runner import _build_namespace_skip_names
 from hawker_agent.agent.evaluator import build_final_evaluation_messages
@@ -212,63 +210,6 @@ class TestCodeAgentState:
         items = recover_items_from_final_answer(payload)
         assert len(items) == 2
         assert items[1]["url"] == "https://b"
-
-    def test_validate_final_answer_request_rejects_first_step(self) -> None:
-        state = CodeAgentState()
-        state.items.append([{"url": "https://a", "start": "1"}])
-        step_meta = CodeAgentStepMetadata(step_no=1, activity_before=0, progress_before=0)
-        reason = validate_final_answer_request(1, state, step_meta)
-        assert reason is not None
-        assert "首步禁止直接完成" in reason
-
-    def test_validate_final_answer_request_rejects_first_collection_step(self) -> None:
-        state = CodeAgentState()
-        state.items.append([{"url": "https://a"}, {"url": "https://b"}])
-        state.activity_marker = 1
-        step_meta = CodeAgentStepMetadata(step_no=2, activity_before=0, progress_before=0)
-        reason = validate_final_answer_request(2, state, step_meta)
-        assert reason is not None
-        assert "首次采集到数据" in reason
-
-    def test_validate_final_answer_request_allows_after_check_step(self) -> None:
-        state = CodeAgentState()
-        state.items.append(
-            [
-                {"url": "https://a", "start": 0, "fork": 0, "today_start": 10},
-                {"url": "https://b", "start": 0, "fork": 0, "today_start": 11},
-            ]
-        )
-        state.activity_marker = 1
-        step_meta = CodeAgentStepMetadata(step_no=3, activity_before=1, progress_before=1)
-        reason = validate_final_answer_request(3, state, step_meta)
-        assert reason is None
-
-    def test_resolve_final_delivery_items_prefers_inline_json_items(self) -> None:
-        state = CodeAgentState()
-        state.items.append(
-            [
-                {"title": "A"},
-                {"title": "B"},
-                {"title": "C"},
-                {"title": "D"},
-                {"title": "E"},
-            ]
-        )
-        final_answer = json.dumps(
-            {
-                "completed": True,
-                "items": [
-                    {"title": "A"},
-                    {"title": "B"},
-                    {"title": "C"},
-                    {"title": "D"},
-                ],
-            },
-            ensure_ascii=False,
-        )
-        items = resolve_final_delivery_items("返回json，提取 title", final_answer, state)
-        assert len(items) == 4
-        assert [item["title"] for item in items] == ["A", "B", "C", "D"]
 
     def test_replace_state_items_overwrites_runtime_items(self) -> None:
         state = CodeAgentState()

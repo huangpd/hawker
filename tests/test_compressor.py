@@ -221,7 +221,7 @@ class TestHistoryCompression:
         # System message still first
         assert msgs[0]["role"] == "system"
 
-    def test_notebook_workspace_mode_uses_milestones_and_recent_steps(self) -> None:
+    def test_notebook_workspace_mode_uses_progress_and_failure_notes(self) -> None:
         h = CodeAgentHistoryList.from_task("抓取任务", "系统提示")
         h.record_step(
             step=1,
@@ -257,4 +257,5 @@ class TestHistoryCompression:
         assert "[Milestones]" in workspace
         assert "[Long-Term Memory]" in workspace
         assert "TimeoutError" in workspace
+        assert "title" in workspace or "total=2" in workspace
         assert "products" in workspace

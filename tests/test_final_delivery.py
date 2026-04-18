@@ -68,6 +68,38 @@ async def test_process_final_answer_request_rejects_when_evaluator_rejects(
 
 
 @pytest.mark.asyncio
+async def test_process_final_answer_request_no_longer_rejects_first_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from hawker_agent.agent import final_delivery as final_delivery_mod
+
+    state = CodeAgentState()
+    state.final_answer_requested = "完成"
+    state.final_artifact_requested = {"type": "text", "content": "完成"}
+    history = MagicMock()
+    step_meta = CodeAgentStepMetadata(step_no=1, activity_before=0, progress_before=0)
+
+    async def fake_evaluate_final_delivery(**kwargs):
+        return FinalEvaluation(accept=True, reason="ok")
+
+    monkeypatch.setattr(final_delivery_mod, "evaluate_final_delivery", fake_evaluate_final_delivery)
+
+    result = await process_final_answer_request(
+        task="提取标题",
+        step=1,
+        state=state,
+        step_meta=step_meta,
+        history=history,
+        observation="[无输出]",
+    )
+
+    assert result == "[无输出]"
+    assert state.done is True
+    assert state.answer == "完成"
+    history.add_user.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_process_final_answer_request_accepts_and_replaces_inline_json_items(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

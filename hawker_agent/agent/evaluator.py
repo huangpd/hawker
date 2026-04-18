@@ -22,9 +22,6 @@ class FinalEvaluation:
 
 @dataclass
 class TaskRequirements:
-    required_fields: list[str]
-    expected_count_hint: int | None = None
-    expects_inline_json: bool = False
     delivery_mode: str = "summary_with_structured_items"
     expected_output_format: Literal["text", "json", "markdown"] | None = None
 
@@ -33,84 +30,18 @@ def _detect_expected_output_format(
     task: str,
     expects_inline_json: bool,
 ) -> Literal["text", "json", "markdown"] | None:
-    """从任务文本中推断用户期望的最终输出格式。"""
+    """只识别明确的 JSON 契约，不再从自然语言猜 Markdown/Text。"""
     if expects_inline_json:
         return "json"
-
-    lowered = task.lower()
-    text_patterns = (
-        r"纯文本",
-        r"plain\s*text",
-        r"不要\s*markdown",
-        r"不用\s*markdown",
-        r"只要\s*文本",
-    )
-    if any(re.search(pattern, lowered, re.I) for pattern in text_patterns):
-        return "text"
-
-    markdown_patterns = (
-        r"markdown",
-        r"\bmd\b",
-        r"用\s*md\b",
-        r"用\s*markdown",
-        r"按\s*markdown",
-        r"请.*markdown.*返回",
-        r"请.*markdown.*输出",
-    )
-    if any(re.search(pattern, lowered, re.I) for pattern in markdown_patterns):
-        return "markdown"
-
     return None
 
 
 def extract_task_requirements(task: str) -> TaskRequirements:
-    """从用户任务里提炼轻量交付要求。"""
-    fields: list[str] = []
-    seen: set[str] = set()
-    lines = [line.strip() for line in task.splitlines() if line.strip()]
-
-    in_field_block = False
-    for line in lines:
-        if "提取字段" in line or "字段:" in line:
-            in_field_block = True
-            continue
-        if in_field_block:
-            normalized = line.lstrip("-*•").strip()
-            if not normalized:
-                continue
-            if ":" in normalized:
-                field_name = normalized.split(":", 1)[0].strip().strip("`'\"")
-                if field_name and field_name not in seen:
-                    fields.append(field_name)
-                    seen.add(field_name)
-                continue
-            if normalized.startswith(("1.", "2.", "3.", "步骤")):
-                in_field_block = False
-        if not in_field_block:
-            for match in re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", line):
-                if match not in seen:
-                    fields.append(match)
-                    seen.add(match)
-
-    expected_count_hint = None
-    count_patterns = [
-        r"前\s*(\d+)\s*条",
-        r"返回\s*(\d+)\s*条",
-        r"提取到\s*(\d+)\s*条",
-    ]
-    for pattern in count_patterns:
-        m = re.search(pattern, task)
-        if m:
-            expected_count_hint = int(m.group(1))
-            break
-
+    """从任务中提炼仍会影响交付链路的最小契约。"""
     expects_inline_json = bool(re.search(r"返回\s*json|直接返回\s*json|输出\s*json", task, re.I))
     delivery_mode = "inline_json" if expects_inline_json else "summary_with_structured_items"
     expected_output_format = _detect_expected_output_format(task, expects_inline_json)
     return TaskRequirements(
-        required_fields=fields,
-        expected_count_hint=expected_count_hint,
-        expects_inline_json=expects_inline_json,
         delivery_mode=delivery_mode,
         expected_output_format=expected_output_format,
     )

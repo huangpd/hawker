@@ -54,7 +54,7 @@ def _build_memory_workspace_entries(matches: list) -> list[str]:
 
 
 def _build_output_format_instruction(task: str) -> str:
-    """根据任务要求生成一条简洁的最终输出格式指令。"""
+    """仅为显式 JSON 任务补充一条最终交付指令。"""
     requirements = extract_task_requirements(task)
     output_format = requirements.expected_output_format
     if output_format == "json":
@@ -62,14 +62,7 @@ def _build_output_format_instruction(task: str) -> str:
             "最终交付格式要求：用户要求 JSON。调用 final_answer() 时，"
             "请优先提交合法 JSON，或显式使用 {'type': 'json', 'content': ...}。"
         )
-    if output_format == "markdown":
-        return (
-            "最终交付格式要求：用户要求 Markdown。调用 final_answer() 时，"
-            "请使用 Markdown 正文，最好显式使用 {'type': 'markdown', 'content': ...}。"
-        )
-    return (
-        "最终交付格式要求：默认返回纯文本语义总结。若无明确要求，不要把最终答案包装成 JSON。"
-    )
+    return ""
 
 
 def _inject_reflection_prompts(
@@ -80,54 +73,11 @@ def _inject_reflection_prompts(
     max_steps: int,
     no_progress_steps: int,
 ) -> None:
-    """在关键间隔注入系统反思 Prompt 以引导代理。
-
-    Args:
-        history (CodeAgentHistoryList): 当前对话历史。
-        step (int): 当前步骤编号。
-        state (CodeAgentState): 当前全局代理状态。
-        step_meta (CodeAgentStepMetadata): 当前步骤的元数据。
-        max_steps (int): 任务允许的最大总步数。
-        no_progress_steps (int): 连续无进展步骤的计数器。
-    """
-    # 3a. 首步完成 — 策略确认
-    if step == 1:
-        history.add_user(
-            "[System 提示] 第一步完成。下一步请先确认：\n"
-            "1. 页面类型：SSR 还是 SPA？有没有发现数据 API？\n"
-            "2. 数据获取策略：API 重放 / DOM 提取 / 混合？\n"
-            "3. 预估总数据量和翻页方式\n"
-            "确认策略后再开始提取。"
-        )
-
-    # 3b. 首次成功采集 — 数据质量检查
-    if step_meta.activity_before == 0 and state.activity_marker > 0:
-        history.add_user(
-            "[System 提示] 首批数据已采集。请检查：\n"
-            "1. 字段是否完整，有无缺失关键字段？\n"
-            "2. 数据格式是否干净（HTML 残留、编码问题）？\n"
-            "3. 去重是否正常，有无重复条目？\n"
-            "如有问题，先修复提取逻辑再继续。"
-        )
-
-    # 3c. 进度过半 — 进展回顾
-    if step == max_steps // 2:
-        history.add_user(
-            f"[System 提示] 已用 {step}/{max_steps} 步，采集 {len(state.items)} 条。\n"
-            "请评估：\n"
-            "1. 当前进度是否符合预期？\n"
-            "2. 剩余步数是否足够完成任务？\n"
-            "3. 是否需要调整策略（如加大翻页步长、简化字段）？"
-        )
-
-    # 3d. 连续 2 步无进展 — 诊断提示
+    """只在明显卡住时注入一条简短诊断提示。"""
     if no_progress_steps == 2:
         history.add_user(
-            "[System 警告] 连续 2 步无进展。请停下来诊断：\n"
-            "1. 是选择器失效？用 dom_state() 重新获取页面状态\n"
-            "2. 是 API 返回异常？检查 HTTP 状态码和响应内容\n"
-            "3. 是翻页逻辑有误？检查页码是否超出范围\n"
-            "必须切换策略，不要重复同一种方法。"
+            "[System 警告] 连续 2 步无进展。请立即切换方法："
+            "重新侦察 DOM / 检查 API 响应 / 更换翻页策略，不要重复同一操作。"
         )
 
 
@@ -307,7 +257,9 @@ async def run(
                 custom_content = custom_path.read_text(encoding="utf-8").strip()
                 if custom_content:
                     instructions += "\n\n" + custom_content
-            instructions += "\n\n" + _build_output_format_instruction(task)
+            output_format_instruction = _build_output_format_instruction(task)
+            if output_format_instruction:
+                instructions += "\n\n" + output_format_instruction
 
             history = CodeAgentHistoryList.from_task(
                 task,

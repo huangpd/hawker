@@ -176,9 +176,10 @@ async def run_agent_step(
     if remaining_steps == 1 or (state.token_stats.total_tokens >= cfg.max_total_tokens * 0.9):
         history.add_user(
             "[System 警告] 即将达到步数/token上限！\n"
-            "你必须在下一步调用 final_answer() 返回结果：\n"
-            "- 说明哪些已完成，哪些未完成\n"
-            "- 即使任务未完成，也请返回已收集的部分数据。"
+            "请优先准备最终交付：\n"
+            "- 下一步应以 `final_answer()` 收尾，除非还缺最后一个必要动作\n"
+            "- 说明哪些已完成、哪些未完成\n"
+            "- 即使任务未完成，也要返回已收集的部分数据。"
         )
 
     return StepRunResult(no_progress_steps=next_no_progress_steps)

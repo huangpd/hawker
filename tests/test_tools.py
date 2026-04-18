@@ -203,14 +203,6 @@ class TestBuildNamespace:
         assert state.final_answer_requested == "# 总结\n已完成"
 
     @pytest.mark.asyncio
-    async def test_final_answer_aligns_plain_string_to_expected_markdown(self) -> None:
-        state = CodeAgentState(expected_output_format="markdown")
-        ns = self._get_ns(state, "/tmp/test")
-        await ns["final_answer"]("# 标题\n\n- A")
-        assert state.final_artifact_requested is not None
-        assert state.final_artifact_requested["type"] == "markdown"
-        assert state.final_answer_requested == "# 标题\n\n- A"
-
     @pytest.mark.asyncio
     async def test_save_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -370,12 +362,6 @@ def test_normalize_final_artifact_drops_summary_field_from_wrapper() -> None:
 
     assert artifact["content"] == content.strip()
     assert "summary" not in artifact
-
-
-def test_normalize_final_artifact_aligns_to_expected_markdown() -> None:
-    artifact = normalize_final_artifact("# 标题\n\n- A", expected_output_format="markdown")
-    assert artifact["type"] == "markdown"
-    assert artifact["content"] == "# 标题\n\n- A"
 
 
 def test_normalize_final_artifact_parses_expected_json_string() -> None:

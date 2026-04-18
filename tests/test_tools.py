@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from hawker_agent.agent.namespace import build_namespace, register_core_actions
+from hawker_agent.agent.artifact import normalize_final_artifact, recover_items_from_artifact
 from hawker_agent.agent.prompts import build_system_prompt
 from hawker_agent.models.state import CodeAgentState
 from hawker_agent.observability import clear_log_context, configure_logging
@@ -115,6 +116,18 @@ class TestBuildSystemPrompt:
         )
         assert "工具列表" in result
 
+    def test_final_answer_prompt_does_not_teach_result_json_boilerplate(self) -> None:
+        instructions = (Path(__file__).resolve().parents[1] / "hawker_agent" / "templates" / "default_instructions.txt").read_text(
+            encoding="utf-8"
+        )
+        result = build_system_prompt(
+            async_capabilities="caps_a",
+            sync_capabilities="caps_s",
+            instructions=instructions,
+        )
+        assert "不要提 `result.json`" in result
+        assert "正式结果会在任务结束后由系统自动写入 `result.json`" not in result
+
 
 # ─── namespace ──────────────────────────────────────────────────
 
@@ -176,6 +189,23 @@ class TestBuildNamespace:
         assert state.final_answer_requested == "任务完成"
 
     @pytest.mark.asyncio
+    async def test_final_answer_accepts_structured_artifact(self) -> None:
+        state = CodeAgentState()
+        ns = self._get_ns(state, "/tmp/test")
+        await ns["final_answer"](
+            {
+                "type": "markdown",
+                "content": "# 总结\n已完成",
+                "summary": "已完成",
+                "items": [{"url": "https://example.com"}],
+            }
+        )
+        assert state.final_artifact_requested is not None
+        assert state.final_artifact_requested["type"] == "markdown"
+        assert state.final_artifact_requested["items"] == [{"url": "https://example.com"}]
+        assert state.final_answer_requested == "# 总结\n已完成"
+
+    @pytest.mark.asyncio
     async def test_save_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             state = CodeAgentState()
@@ -204,7 +234,6 @@ class TestBuildNamespace:
         record = caplog.records[-1]
         assert record.trace_id == "trace-tool"
         assert record.run_id == "run-tool"
-
 
 # ─── Data Tools Registration ───────────────────────────────────
 
@@ -288,6 +317,68 @@ def test_save_result_json_does_not_delete_result_when_checkpoint_has_same_name(t
     assert data["items_count"] == 1
 
 
+def test_save_result_json_persists_artifact(tmp_path: Path) -> None:
+    result_path = save_result_json(
+        tmp_path,
+        [{"id": 1}],
+        "done",
+        final_artifact={"type": "markdown", "content": "# done", "summary": "done"},
+    )
+
+    data = json_mod.loads(result_path.read_text(encoding="utf-8"))
+    assert data["artifact"]["type"] == "markdown"
+    assert data["artifact"]["summary"] == "done"
+
+
+def test_normalize_final_artifact_keeps_business_text_unchanged() -> None:
+    text = (
+        "完成情况：已采集并查看最近 7 条动态，核心字段包含 time、url、text；"
+        "结果数据已保存，正式结果会由系统写入 result.json。"
+    )
+    artifact = normalize_final_artifact(
+        text
+    )
+
+    assert artifact["content"] == text
+    assert "result.json" in artifact["summary"]
+
+
+def test_normalize_final_artifact_builds_shorter_summary_for_long_text() -> None:
+    content = "第一段总结。\n\n" + ("这是正文。 " * 80)
+    artifact = normalize_final_artifact({"type": "text", "content": content, "summary": content})
+
+    assert artifact["content"] == content.strip()
+    assert len(artifact["summary"]) < len(artifact["content"])
+    assert artifact["summary"].startswith("第一段总结。")
+
+
+def test_normalize_final_artifact_does_not_guess_business_dict_wrapper() -> None:
+    artifact = normalize_final_artifact(
+        {
+            "type": "article",
+            "content": "正文",
+            "summary": "摘要",
+        }
+    )
+
+    assert artifact["type"] == "json"
+    assert artifact["content"]["type"] == "article"
+
+
+def test_recover_items_from_artifact_nested_content_items() -> None:
+    artifact = {
+        "type": "json",
+        "content": {
+            "items": [{"url": "https://example.com/a"}, {"url": "https://example.com/b"}],
+            "total": 2,
+        },
+    }
+
+    recovered = recover_items_from_artifact(artifact)
+    assert len(recovered) == 2
+    assert recovered[0]["url"] == "https://example.com/a"
+
+
 def test_save_llm_io_json_serializes_complex_payload(tmp_path: Path) -> None:
     class Dummy:
         def __init__(self) -> None:
@@ -312,6 +403,35 @@ def test_save_llm_io_json_serializes_complex_payload(tmp_path: Path) -> None:
     assert data["records"][0]["llm_response"]["raw"]["value"] == "ok"
 
 
+def test_save_llm_io_json_redacts_sensitive_fields_and_non_serializable_values(tmp_path: Path) -> None:
+    path = save_llm_io_json(
+        tmp_path,
+        "测试任务",
+        records=[
+            {
+                "step": 1,
+                "prompt": {
+                    "headers": {
+                        "Authorization": "Bearer secret-token",
+                        "x-test": "ok",
+                    },
+                    "cookies": [{"name": "sid", "value": "abc"}],
+                },
+                "llm_response": {
+                    "raw": object(),
+                },
+            }
+        ],
+    )
+
+    data = json_mod.loads(path.read_text(encoding="utf-8"))
+    record = data["records"][0]
+    assert record["prompt"]["headers"]["Authorization"] == "***redacted***"
+    assert record["prompt"]["headers"]["x-test"] == "ok"
+    assert record["prompt"]["cookies"] == "***redacted***"
+    assert record["llm_response"]["raw"] == "<non-serializable:object>"
+
+
 class TestHttpTools:
     @pytest.mark.asyncio
     async def test_http_request_uses_httpx_style_json_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -329,7 +449,14 @@ class TestHttpTools:
                 captured.update(kwargs)
                 return DummyResponse()
 
-        monkeypatch.setattr("hawker_agent.tools.http_tools._get_client", lambda: DummyClient())
+        async def fake_get_client() -> DummyClient:
+            return DummyClient()
+
+        async def fake_validate_url(url: str) -> None:
+            return None
+
+        monkeypatch.setattr("hawker_agent.tools.http_tools._get_client", fake_get_client)
+        monkeypatch.setattr("hawker_agent.tools.http_tools._validate_url", fake_validate_url)
 
         raw = await http_request(
             "https://example.com/api",
@@ -358,7 +485,14 @@ class TestHttpTools:
                 captured.update(kwargs)
                 return DummyResponse()
 
-        monkeypatch.setattr("hawker_agent.tools.http_tools._get_client", lambda: DummyClient())
+        async def fake_get_client() -> DummyClient:
+            return DummyClient()
+
+        async def fake_validate_url(url: str) -> None:
+            return None
+
+        monkeypatch.setattr("hawker_agent.tools.http_tools._get_client", fake_get_client)
+        monkeypatch.setattr("hawker_agent.tools.http_tools._validate_url", fake_validate_url)
 
         data = await http_json(
             "https://example.com/api",
@@ -370,7 +504,13 @@ class TestHttpTools:
         assert captured["content"] == '{"page": 1}'
 
     @pytest.mark.asyncio
-    async def test_http_request_rejects_ambiguous_payload(self) -> None:
+    async def test_http_request_rejects_ambiguous_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        async def fake_validate_url(url: str) -> None:
+            return None
+
+        from hawker_agent.tools import http_tools as http_tools_module
+        monkeypatch.setattr(http_tools_module, "_validate_url", fake_validate_url)
+
         raw = await http_request(
             "https://example.com/api",
             method="POST",
@@ -380,3 +520,17 @@ class TestHttpTools:
 
         assert raw.startswith("[错误]")
         assert "json/data/content/body" in raw
+
+    @pytest.mark.asyncio
+    async def test_validate_url_rejects_private_ip_resolved_from_dns(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from hawker_agent.tools import http_tools as http_tools_module
+
+        async def fake_resolve_host_ips(hostname: str, port: int | None) -> set[str]:
+            assert hostname == "example.com"
+            assert port == 443
+            return {"169.254.169.254"}
+
+        monkeypatch.setattr(http_tools_module, "_resolve_host_ips", fake_resolve_host_ips)
+
+        with pytest.raises(ValueError, match="private/reserved IP via DNS"):
+            await http_tools_module._validate_url("https://example.com/data")

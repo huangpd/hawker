@@ -315,7 +315,7 @@ async def dom_state(
 async def nav_search(
     session: BrowserSession,
     query: str,
-    engine: str = "duckduckgo",
+    engine: str = "google",
     mode: str = "summary",
     previous_snapshot: dict | None = None,
 ) -> DomActionResult:
@@ -324,7 +324,7 @@ async def nav_search(
     Args:
         session (BrowserSession): 浏览器会话对象。
         query (str): 搜索关键词。
-        engine (str, optional): 搜索引擎名称。默认为 "duckduckgo"。
+        engine (str, optional): 搜索引擎名称。默认为 "google"。
         mode (str, optional): 上下文模式，支持 "summary"、"diff"、"full"。默认为 "summary"。
         previous_snapshot (dict | None, optional): 上一个页面的快照。默认为 None。
 

@@ -32,6 +32,15 @@ class BrowserSession:
         """
         settings = get_settings()
         self._headless: bool = headless if headless is not None else settings.headless
+        self._browser_profile_kwargs = {
+            "headless": self._headless,
+            "executable_path": settings.browser_executable_path,
+            "user_data_dir": settings.browser_user_data_dir,
+            "profile_directory": settings.browser_profile_directory,
+            "storage_state": settings.browser_storage_state,
+            "channel": settings.browser_channel,
+            "cdp_url": settings.browser_cdp_url,
+        }
         self._session: _UpstreamBrowserSession | None = None
         self._download_path: Path | None = None
         self.target_dir: Path | None = None  # 本次任务产物的最终保存目录
@@ -49,7 +58,12 @@ class BrowserSession:
         self._download_path = Path(tempfile.mkdtemp(prefix="hawker_browser_"))
         
         # 2. 启动浏览器
-        profile = BrowserProfile(headless=self._headless)
+        profile_kwargs = {
+            key: value
+            for key, value in self._browser_profile_kwargs.items()
+            if value is not None
+        }
+        profile = BrowserProfile(**profile_kwargs)
         self._session = _UpstreamBrowserSession(browser_profile=profile)
         await self._session.start()
         

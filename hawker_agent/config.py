@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -41,6 +42,12 @@ class Settings(BaseSettings):
     openai_base_url: str | None = None
     model_name: str
     reasoning_effort: str = ""
+    small_model_name: str | None = None
+    healer_enabled: bool = True
+    healer_reasoning_effort: str = ""
+    healer_max_attempts: int = 3
+    final_evaluator_enabled: bool = True
+    final_evaluator_reasoning_effort: str = ""
     langfuse_public_key: str | None = None
     langfuse_secret_key: str | None = None
     langfuse_base_url: str | None = None
@@ -48,7 +55,8 @@ class Settings(BaseSettings):
     langfuse_release: str = ""
 
     # 预算控制
-    max_total_tokens: int = 120_000
+    max_steps: int = 30
+    max_total_tokens: int = 200_000
     max_no_progress_steps: int = 10
     message_compression_tokens: int = 12_000
 
@@ -58,9 +66,36 @@ class Settings(BaseSettings):
 
     # 浏览器
     headless: bool = False
+    browser_executable_path: Path | None = None
+    browser_user_data_dir: Path | None = None
+    browser_profile_directory: str = "Default"
+    browser_storage_state: Path | None = None
+    browser_channel: str | None = None
+    browser_cdp_url: str | None = None
 
     # 日志
     log_level: str = "INFO"
+
+    @field_validator(
+        "browser_executable_path",
+        "browser_user_data_dir",
+        "browser_storage_state",
+        mode="before",
+    )
+    @classmethod
+    def _empty_path_as_none(cls, value: object) -> object:
+        """将 .env 中空的可选路径配置视为未配置。"""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @model_validator(mode="after")
+    def _sync_paths(self) -> "Settings":
+        """在用户仅覆盖 `scrape_dir` 时，同步默认的 memory.db 位置。"""
+        default_memory_path = Path("hawker_file") / "memory.db"
+        if self.memory_db_path == default_memory_path:
+            self.memory_db_path = self.scrape_dir / "memory.db"
+        return self
 
 
 @lru_cache(maxsize=1)

@@ -1,4 +1,3 @@
 ### 1. 搜索引擎高级指令 (Google/Arxiv)
-- **文档优先**：搜索论文/白皮书时，关键词加入 `filetype:pdf` 或 `site:arxiv.org` 或 `site:openreview.net`
-- **精准匹配**：对特定术语使用双引号强匹配
+- **文档优先**：在搜索引擎中搜索论文/白皮书时，酌情加入 `site:arxiv.org` 或 `site:openreview.net`等
 - 先思考目标平台（如知名代码/学术/数据集站）是否提供公开官方 API。若有，直接构造并请求

@@ -13,6 +13,26 @@ from hawker_agent.models.cell import CodeCell
 
 logger = logging.getLogger(__name__)
 
+_SENSITIVE_KEYWORDS = (
+    "authorization",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "cookie",
+    "session",
+    "api_key",
+    "apikey",
+    "access_key",
+    "refresh_key",
+)
+
+
+def _is_sensitive_key(key: str) -> bool:
+    """判断一个字段名是否应在导出时脱敏。"""
+    normalized = key.strip().lower()
+    return any(keyword in normalized for keyword in _SENSITIVE_KEYWORDS)
+
 
 def _to_jsonable(value: Any) -> Any:
     """将复杂对象转换为可 JSON 序列化的结构。
@@ -30,7 +50,14 @@ def _to_jsonable(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, dict):
-        return {str(k): _to_jsonable(v) for k, v in value.items()}
+        jsonable: dict[str, Any] = {}
+        for k, v in value.items():
+            key = str(k)
+            if _is_sensitive_key(key):
+                jsonable[key] = "***redacted***"
+            else:
+                jsonable[key] = _to_jsonable(v)
+        return jsonable
     if isinstance(value, (list, tuple, set)):
         return [_to_jsonable(v) for v in value]
     if hasattr(value, "model_dump"):
@@ -48,7 +75,7 @@ def _to_jsonable(value: Any) -> Any:
             return _to_jsonable(vars(value))
         except Exception:
             pass
-    return repr(value)
+    return f"<non-serializable:{type(value).__name__}>"
 
 
 def export_notebook(cells: list[CodeCell], task: str, run_dir: Path) -> Path:
@@ -125,6 +152,7 @@ def save_result_json(
     run_dir: Path,
     items: list[dict],
     answer: str,
+    final_artifact: dict[str, Any] | None = None,
     checkpoint_files: set[str] | None = None,
 ) -> Path:
     """保存最终结果为 JSON 文件，并清理中间检查点。
@@ -148,6 +176,7 @@ def save_result_json(
 
     data = {
         "result": summary,
+        "artifact": _to_jsonable(final_artifact) if final_artifact is not None else None,
         "items": items,
         "items_count": len(items),
     }
@@ -172,6 +201,8 @@ def save_llm_io_json(
     run_dir: Path,
     task: str,
     records: list[dict[str, Any]],
+    healing_records: list[dict[str, Any]] | None = None,
+    evaluator_records: list[dict[str, Any]] | None = None,
 ) -> Path:
     """保存单次任务的完整 LLM 输入输出交互记录。
 
@@ -188,6 +219,8 @@ def save_llm_io_json(
         "task": task,
         "steps": len(records),
         "records": _to_jsonable(records),
+        "healing_records": _to_jsonable(healing_records or []),
+        "evaluator_records": _to_jsonable(evaluator_records or []),
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)

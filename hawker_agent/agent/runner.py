@@ -7,7 +7,13 @@ import time
 from pathlib import Path
 from typing import Literal
 
+from hawker_agent.agent.artifact import (
+    artifact_to_answer_text,
+    normalize_final_artifact,
+    recover_items_from_artifact,
+)
 from hawker_agent.agent.executor import execute
+from hawker_agent.agent.evaluator import evaluate_final_delivery, extract_task_requirements
 from hawker_agent.agent.namespace import HawkerNamespace, build_namespace
 from hawker_agent.agent.parser import parse_response
 from hawker_agent.agent.prompts import build_system_prompt
@@ -26,6 +32,7 @@ from hawker_agent.observability import trace, ToolStatsProcessor, add_trace_proc
 from hawker_agent.storage.exporter import export_notebook, save_llm_io_json, save_result_json
 from hawker_agent.storage.logger import init_run_dir, log_step, log_summary
 from hawker_agent.tools.data_tools import normalize_items
+from hawker_agent.tools.http_tools import close_http_clients
 from hawker_agent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -56,20 +63,40 @@ def _build_memory_workspace_entries(matches: list) -> list[str]:
 
 def _recover_items_from_final_answer(answer: str) -> list[dict]:
     """从 final_answer 文本中兜底恢复结构化 items。"""
-    text = answer.strip()
-    if not text:
-        return []
+    artifact = normalize_final_artifact(answer)
+    return recover_items_from_artifact(artifact)
 
-    try:
-        parsed = json.loads(text)
-    except Exception:
-        return []
 
-    if isinstance(parsed, dict) and isinstance(parsed.get("items"), list):
-        return normalize_items(parsed["items"])
-    if isinstance(parsed, (list, dict)):
-        return normalize_items(parsed)
-    return []
+def _resolve_final_delivery_items(task: str, final_answer: str, state: CodeAgentState) -> list[dict]:
+    """确定最终交付评估应使用哪一份 items。
+
+    默认使用运行时累积的 ``state.items``。当任务要求 inline JSON 且
+    ``final_answer`` 中携带了合法 ``items`` 时，优先把这份内联结果视为
+    最终交付候选，避免早期探索阶段 append 的脏数据绑架最终验收。
+    """
+    requirements = extract_task_requirements(task)
+    if requirements.delivery_mode != "inline_json":
+        return state.items.to_list()
+
+    # 对 inline_json 任务，最终交付里的 items 才是最接近“用户要什么”的候选真值。
+    # 运行过程中 append_items() 累积的是工作缓存，里面可能混入早期探索阶段的误采样本。
+    # 因此 evaluator 不应被旧缓存绑死，而应优先检查 final_answer 内联提交的结果。
+    recovered_items = _recover_items_from_final_answer(final_answer)
+    return recovered_items or state.items.to_list()
+
+
+def _replace_state_items(state: CodeAgentState, items: list[dict]) -> None:
+    """用最终交付结果覆盖运行态 items。
+
+    这里是系统内部的一致性收敛，不暴露成模型工具。仅在 inline JSON
+    交付通过最终验收后调用，用来把运行过程中的临时/错误采集结果
+    收敛为最终可落盘的结构化数据。
+    """
+    # 这里不是给模型增加一个“replace_items”工具，而是系统在最终放行后做内部收敛。
+    # 只有 inline_json 交付通过评估时，才允许最终交付覆盖运行时缓存。
+    # 这样 result.json / items_count / 最终 answer 才能保持一致。
+    state.items.clear()
+    state.items.append(normalize_items(items))
 
 
 def _validate_final_answer_request(
@@ -91,6 +118,23 @@ def _validate_final_answer_request(
         return "这是首次采集到数据的步骤。请下一步先检查样本、清洗字段或验证去重后再完成任务。"
 
     return None
+
+
+def _collect_recent_observations(state: CodeAgentState, limit: int = 2) -> list[str]:
+    """提取最近少量 observation，供最终交付评估使用。"""
+    observations: list[str] = []
+    for record in reversed(state.llm_records):
+        execution = record.get("execution") or {}
+        obs = str(execution.get("observation") or "").strip()
+        if not obs:
+            continue
+        # 最终交付评估只关心最近成功采集证据，不把旧的执行错误噪音带进去。
+        if "[执行错误]" in obs or "未找到 ```python``` 代码块" in obs:
+            continue
+        observations.append(obs[:500])
+        if len(observations) >= limit:
+            break
+    return list(reversed(observations))
 
 
 def _inject_reflection_prompts(
@@ -191,13 +235,18 @@ def _build_result(
     """
     total_duration = time.time() - state.started_at
     final_answer = state.answer
+    final_artifact = state.final_artifact
 
-    if not state.items and final_answer:
-        recovered_items = _recover_items_from_final_answer(final_answer)
+    if not final_artifact and final_answer:
+        final_artifact = normalize_final_artifact(final_answer)
+        state.final_artifact = final_artifact
+
+    if not state.items and final_artifact:
+        recovered_items = recover_items_from_artifact(final_artifact)
         if recovered_items:
             added, skipped = state.items.append(recovered_items)
             logger.warning(
-                "final_answer 未显式 append_items，已自动回填 %d 条数据 (skipped=%d)",
+                "final_answer artifact 未显式 append_items，已自动回填 %d 条数据 (skipped=%d)",
                 added,
                 skipped,
             )
@@ -230,16 +279,31 @@ def _build_result(
 
         # 因为 items 字段已经包含了完整数据。保持 answer 作为纯语义总结。
         final_answer = " ".join(parts[:3]) + ("\n" + "\n".join(parts[3:]) if len(parts) > 3 else "")
+        final_artifact = normalize_final_artifact(final_answer)
+        state.final_artifact = final_artifact
 
     # 执行持久化
     log_summary(log_path, state.token_stats, total_duration, total_steps, final_answer)
     nb_path = export_notebook(cells, task, state.run_dir)
-    json_path = save_result_json(state.run_dir, state.items.to_list(), final_answer, state.checkpoint_files)
-    llm_io_path = save_llm_io_json(state.run_dir, task, state.llm_records)
+    json_path = save_result_json(
+        state.run_dir,
+        state.items.to_list(),
+        final_answer,
+        final_artifact=final_artifact,
+        checkpoint_files=state.checkpoint_files,
+    )
+    llm_io_path = save_llm_io_json(
+        state.run_dir,
+        task,
+        state.llm_records,
+        healing_records=state.healing_records,
+        evaluator_records=state.evaluator_records,
+    )
 
     return CodeAgentResult(
         answer=final_answer,
         success=stop_reason == "done",
+        artifact=final_artifact,
         items=state.items.to_list(),
         run_id=state.run_id,
         model_name=model_name,
@@ -454,12 +518,14 @@ async def run(
                                 # 报错了则拒绝本步的完成申请
                                 logger.warning("Step %d: final_answer 被拒绝，因为代码执行报错", step)
                                 state.final_answer_requested = None
+                                state.final_artifact_requested = None
                                 observation = f"{observation}\n[final_answer已拒绝] 本步有执行错误"
                             else:
                                 reject_reason = _validate_final_answer_request(step, state, step_meta)
                                 if reject_reason:
                                     logger.warning("Step %d: final_answer 被拒绝: %s", step, reject_reason)
                                     state.final_answer_requested = None
+                                    state.final_artifact_requested = None
                                     observation = (
                                         f"{observation}\n[final_answer已拒绝] {reject_reason}"
                                     )
@@ -470,9 +536,50 @@ async def run(
                                         "必要时重新提取后再提交最终结果。"
                                     )
                                 else:
-                                    logger.info("Step %d: 任务完成申请被接受", step)
-                                    state.done = True
-                                    state.answer = state.final_answer_requested
+                                    # 最终交付评估优先看“这次准备交付什么”，而不是无条件看历史缓存。
+                                    # 尤其 inline_json 任务里，final_answer.items 可能是在纠正早期误采的脏数据。
+                                    final_answer_text = state.final_answer_requested or ""
+                                    delivery_items = _resolve_final_delivery_items(
+                                        task,
+                                        final_answer_text,
+                                        state,
+                                    )
+                                    evaluation = await evaluate_final_delivery(
+                                        task=task,
+                                        final_answer=final_answer_text,
+                                        items=delivery_items,
+                                        recent_observations=_collect_recent_observations(state),
+                                        state=state,
+                                    )
+                                    if evaluation and not evaluation.accept:
+                                        logger.warning("Step %d: final_answer 被评估器拒绝: %s", step, evaluation.reason)
+                                        observation = (
+                                            f"{observation}\n[final_answer已拒绝] {evaluation.reason}"
+                                        )
+                                        history.add_user(
+                                            "[System 提示] 最终交付已被评估器拒绝。\n"
+                                            f"原因: {evaluation.reason}\n"
+                                            "请基于当前样本、字段完整性和最近 observation 修正后再重新提交 final_answer。"
+                                        )
+                                        state.final_answer_requested = None
+                                        state.final_artifact_requested = None
+                                    else:
+                                        requirements = extract_task_requirements(task)
+                                        if requirements.delivery_mode == "inline_json":
+                                            recovered_items = _recover_items_from_final_answer(final_answer_text)
+                                            if recovered_items:
+                                                # 评估通过后，把最终交付结果回写成正式 items。
+                                                # 否则 result.json 仍会落盘旧缓存，出现“answer 是 4 条、产物是 5 条”的分裂状态。
+                                                _replace_state_items(state, recovered_items)
+                                                logger.info(
+                                                    "Step %d: inline_json 交付已覆盖运行态 items，最终条数=%d",
+                                                    step,
+                                                    len(recovered_items),
+                                                )
+                                        logger.info("Step %d: 任务完成申请被接受", step)
+                                        state.done = True
+                                        state.answer = final_answer_text
+                                        state.final_artifact = state.final_artifact_requested
 
                         # 6. 更新状态与统计
                         state.token_stats.add(
@@ -545,15 +652,15 @@ async def run(
                             }
                         )
 
-                        # 9. 关键节点反思注入
-                        _inject_reflection_prompts(history, step, state, step_meta, max_steps, no_progress_steps)
-
-                        # 10. 终止判断
+                        # 9. 终止判断
                         if state.done:
                             logger.info(stats_proc.get_summary())
                             result = await _finish("done", step)
                             flush_langfuse()
                             return result
+
+                        # 10. 关键节点反思注入
+                        _inject_reflection_prompts(history, step, state, step_meta, max_steps, no_progress_steps)
                         
                         if state.is_over_budget(cfg.max_total_tokens):
                             logger.warning("Step %d: Token 预算耗尽", step)
@@ -587,3 +694,4 @@ async def run(
                 return result
         finally:
             remove_trace_processor(stats_proc)
+            await close_http_clients()

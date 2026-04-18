@@ -30,6 +30,11 @@ class TestParseResponse:
         assert 'api_script = "' in result.code
         assert result.has_code
 
+    def test_js_named_block_invalid_identifier_is_ignored(self) -> None:
+        text = "分析\n```js __import__('os')\nconsole.log('test')\n```"
+        result = parse_response(text)
+        assert result.code == ""
+
     def test_js_and_python_blocks(self) -> None:
         text = (
             "执行计划\n"

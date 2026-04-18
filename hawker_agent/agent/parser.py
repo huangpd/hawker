@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 
 from hawker_agent.models.output import CodeAgentModelOutput
@@ -51,10 +52,9 @@ def parse_response(text: str) -> CodeAgentModelOutput:
             continue
         if lang == "python":
             python_blocks.append(content)
-        elif lang in ("js", "javascript") and var_name:
+        elif lang in ("js", "javascript") and var_name and var_name.isidentifier():
             # 命名 JS 块 → 注入为 Python 字符串变量
-            escaped = content.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-            js_named_blocks.append(f'{var_name} = "{escaped}"')
+            js_named_blocks.append(f"{var_name} = {json.dumps(content, ensure_ascii=False)}")
 
     code_parts = js_named_blocks + python_blocks
     code = "\n\n".join(code_parts)

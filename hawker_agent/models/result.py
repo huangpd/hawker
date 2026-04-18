@@ -33,6 +33,7 @@ class CodeAgentResult:
     # 核心输出
     answer: str
     success: bool
+    artifact: dict | None = None
 
     # 采集数据
     items: list[dict] = field(default_factory=list)

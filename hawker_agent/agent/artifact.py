@@ -85,7 +85,7 @@ def recover_items_from_artifact(artifact: dict[str, Any] | None) -> list[dict]:
             return normalize_items(content["items"])
         except Exception:
             return []
-    if isinstance(content, (list, dict)):
+    if isinstance(content, list):
         try:
             return normalize_items(content)
         except Exception:

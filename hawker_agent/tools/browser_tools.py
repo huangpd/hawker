@@ -177,7 +177,7 @@ def register_browser_tools(
         )
         return _handle_dom_result(result)
 
-    async def nav_search(query: str, engine: str = "google", mode: str = "full") -> str:
+    async def nav_search(query: str, engine: str = "google", mode: str = "auto") -> str:
         """执行搜索并返回摘要字符串；结果页上下文会写入下一轮 DOM Workspace。"""
         effective_mode = _resolve_mode("nav_search", mode)
         result = await actions.nav_search(
@@ -190,17 +190,75 @@ def register_browser_tools(
         return _handle_dom_result(result)
 
     async def inspect_page(
-        dom: bool = True,
-        network: bool = False,
-        cookies: bool = False,
+        include: list[str] | str | None = None,
         selector_index: int | None = None,
         mode: str = "summary",
         only_new_network: bool = True,
+        cookie_domain: str = "",
+        network_method: str | list[str] | None = None,
+        network_status_range: tuple[int, int] | list[int] | int | str | None = None,
+        network_content_type_contains: str = "",
+        network_only_with_body: bool = False,
+        network_max_entries: int = 20,
+        network_structured: bool = False,
+        cookie_verbose: bool = True,
+        *,
+        dom: bool | None = None,
+        network: bool | None = None,
+        cookies: bool | None = None,
     ) -> dict[str, Any]:
-        """统一页面侦察入口，可按需组合 DOM、抓包、Cookie 与指定元素选择器。"""
+        """统一页面侦察入口，按 ``include=`` 组合 DOM、抓包、Cookie、选择器。
+
+        用法示例::
+
+            await inspect_page(include=["dom"])
+            await inspect_page(include=["network"], network_method="POST", network_status_range=(200,299))
+            await inspect_page(include=["cookies"], cookie_domain="example.com")
+
+        Args:
+            include (list[str] | str | None, optional): 要采集的维度，可传
+                ``"dom" | "network" | "cookies"`` 中的任意组合。默认 ``["dom"]``。
+                也支持字符串 ``"dom,network"``。
+            selector_index (int | None, optional): 若设置，将额外为该索引返回
+                ``selector + shadow_path + js_snippet``。
+            mode (str, optional): DOM 模式，默认 ``"summary"``，可选
+                ``"summary" | "diff" | "full" | "auto"``。
+            only_new_network (bool, optional): 仅拉取自上次读取以来的新请求。默认 True。
+            cookie_domain (str, optional): Cookie 过滤域（同源/子域匹配）。
+            network_method / network_status_range / network_content_type_contains /
+            network_only_with_body / network_max_entries: 透传给 ``get_network_log``。
+
+        向后兼容：仍接受旧的布尔参数 ``dom=/network=/cookies=``，当同时传入
+        ``include=`` 时优先使用 ``include``。
+        """
+        # 旧布尔参数的兼容路径
+        legacy_keys: list[str] = []
+        if dom:
+            legacy_keys.append("dom")
+        if network:
+            legacy_keys.append("network")
+        if cookies:
+            legacy_keys.append("cookies")
+
+        if include is None:
+            keys = legacy_keys or ["dom"]
+        elif isinstance(include, str):
+            keys = [k.strip().lower() for k in include.split(",") if k.strip()]
+        else:
+            keys = [str(k).lower() for k in include if str(k).strip()]
+
+        unknown = [k for k in keys if k not in {"dom", "network", "cookies"}]
+        if unknown:
+            return {
+                "error": (
+                    f"inspect_page(include=...) 不支持 {unknown}，"
+                    "合法值：'dom' / 'network' / 'cookies'。"
+                )
+            }
+
         payload: dict[str, Any] = {}
 
-        if dom:
+        if "dom" in keys:
             effective_mode = _resolve_mode("dom_state", mode)
             dom_result = await actions.dom_state(
                 session,
@@ -213,11 +271,28 @@ def register_browser_tools(
                 "snapshot": dom_result.snapshot or {},
             }
 
-        if network:
-            payload["network"] = await actions.get_network_log(session, "", only_new_network)
+        if "network" in keys:
+            network_result = await actions.get_network_log(
+                session,
+                "",
+                only_new_network,
+                method=network_method,
+                status_range=network_status_range,
+                content_type_contains=network_content_type_contains,
+                only_with_body=network_only_with_body,
+                max_entries=network_max_entries,
+            )
+            if network_structured:
+                payload["network"] = network_result
+            elif isinstance(network_result, dict):
+                payload["network"] = network_result.get("entries", [])
+            else:
+                payload["network"] = network_result
 
-        if cookies:
-            payload["cookies"] = await actions.get_cookies(session)
+        if "cookies" in keys:
+            payload["cookies"] = await actions.get_cookies(
+                session, domain=cookie_domain, verbose=cookie_verbose
+            )
 
         if selector_index is not None:
             from hawker_agent.browser.dom_utils import get_selector_from_index as _get_selector
@@ -297,20 +372,53 @@ def register_browser_tools(
         """利用浏览器会话下载文件"""
         return await actions.browser_download(session, url, filename=filename, **kwargs)
 
-    async def get_network_log(filter: str = "", only_new: bool = False) -> list[dict[str, Any]]:
-        """读取页面拦截到的 Fetch/XHR 网络请求日志。"""
-        return await actions.get_network_log(session, filter, only_new)
+    async def get_network_log(
+        filter: str = "",
+        only_new: bool = False,
+        method: str | list[str] | None = None,
+        status_range: tuple[int, int] | list[int] | int | str | None = None,
+        content_type_contains: str = "",
+        only_with_body: bool = False,
+        max_entries: int = 20,
+        structured: bool = False,
+    ) -> list[dict[str, Any]] | dict[str, Any]:
+        """读取页面拦截到的 Fetch/XHR 网络请求日志，支持多维过滤。
 
-    async def get_cookies() -> list[dict[str, Any]]:
+        默认返回兼容旧接口的 ``list[dict]``。如需 richer 结果，请显式传
+        ``structured=True``，此时返回形如
+        ``{"entries": [...], "summary": {...}, "_truncated": bool, "filters": {...}}``。
         """
-        获取当前浏览器会话的所有 Cookie
-        适用于：当你需要使用 http_json() 或 http_request() 发送请求，且需要继承浏览器的登录状态时。
+        result = await actions.get_network_log(
+            session,
+            filter,
+            only_new,
+            method=method,
+            status_range=status_range,
+            content_type_contains=content_type_contains,
+            only_with_body=only_with_body,
+            max_entries=max_entries,
+        )
+        return result if structured else result.get("entries", [])
+
+    async def get_cookies(domain: str = "", verbose: bool = True) -> list[dict[str, Any]]:
+        """
+        获取当前浏览器会话的 Cookie，可按 ``domain=`` 过滤。
+
+        默认返回完整字段，以保持兼容性。若希望降低上下文体积，请显式传
+        ``verbose=False``，仅保留 ``name/value/domain/path``。
+
+        Args:
+            domain (str, optional): 仅返回同域或子域的 Cookie。例如
+                ``domain="example.com"`` 会命中 ``.example.com``、
+                ``api.example.com``；留空则不过滤。
+            verbose (bool, optional): 是否返回完整字段。默认 False。
+
         用法示例:
-            cookies = await get_cookies()
+            cookies = await get_cookies(domain="example.com")
             cookie_dict = {c['name']: c['value'] for c in cookies}
             res = await http_json(url, cookies=cookie_dict)
         """
-        return await actions.get_cookies(session)
+        return await actions.get_cookies(session, domain=domain, verbose=verbose)
 
     async def get_selector_from_index(index: int) -> dict[str, Any]:
         """

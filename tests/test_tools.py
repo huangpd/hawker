@@ -336,6 +336,21 @@ def test_save_result_json_persists_artifact(tmp_path: Path) -> None:
     assert data["artifact"]["content"] == "# done"
 
 
+def test_save_result_json_does_not_duplicate_json_items_artifact(tmp_path: Path) -> None:
+    items = [{"id": 1}, {"id": 2}]
+    result_path = save_result_json(
+        tmp_path,
+        items,
+        json_mod.dumps(items, ensure_ascii=False),
+        final_artifact={"type": "json", "content": items},
+    )
+
+    data = json_mod.loads(result_path.read_text(encoding="utf-8"))
+    assert data["result"] == "[结构化 JSON 结果] 共 2 条记录，详见 items 字段。"
+    assert data["artifact"] == {"type": "json", "content_ref": "items"}
+    assert data["items"] == items
+
+
 def test_normalize_final_artifact_keeps_business_text_unchanged() -> None:
     text = (
         "完成情况：已采集并查看最近 7 条动态，核心字段包含 time、url、text；"
@@ -397,6 +412,19 @@ def test_recover_items_from_artifact_nested_content_items() -> None:
     recovered = recover_items_from_artifact(artifact)
     assert len(recovered) == 2
     assert recovered[0]["url"] == "https://example.com/a"
+
+
+def test_recover_items_from_artifact_does_not_treat_business_dict_as_one_item() -> None:
+    artifact = {
+        "type": "json",
+        "content": {
+            "requested_id": 81,
+            "status": "not_found",
+            "papers": [{"id": 86}, {"id": 87}],
+        },
+    }
+
+    assert recover_items_from_artifact(artifact) == []
 
 
 def test_save_llm_io_json_serializes_complex_payload(tmp_path: Path) -> None:
@@ -554,3 +582,355 @@ class TestHttpTools:
 
         with pytest.raises(ValueError, match="private/reserved IP via DNS"):
             await http_tools_module._validate_url("https://example.com/data")
+
+
+# ─── ACI Tool Refactor ───────────────────────────────────────────
+
+
+class _StubDomainResponse:
+    """Minimal httpx Response stand-in covering the attrs http_request reads."""
+
+    def __init__(self, status_code: int, text: str, content_type: str = "application/json") -> None:
+        self.status_code = status_code
+        self.text = text
+        self.headers = {"Content-Type": content_type}
+
+
+class _StubClient:
+    def __init__(self, response: _StubDomainResponse) -> None:
+        self._response = response
+        self.last_kwargs: dict[str, object] | None = None
+
+    async def request(self, method: str, url: str, **kwargs: object) -> _StubDomainResponse:  # noqa: ARG002
+        self.last_kwargs = kwargs
+        return self._response
+
+
+def _patch_http_client(
+    monkeypatch: pytest.MonkeyPatch,
+    response: _StubDomainResponse,
+) -> _StubClient:
+    client = _StubClient(response)
+
+    async def fake_get_client() -> _StubClient:
+        return client
+
+    async def fake_validate_url(url: str) -> None:  # noqa: ARG001
+        return None
+
+    monkeypatch.setattr("hawker_agent.tools.http_tools._get_client", fake_get_client)
+    monkeypatch.setattr("hawker_agent.tools.http_tools._validate_url", fake_validate_url)
+    return client
+
+
+class TestHttpRequestACI:
+    @pytest.mark.asyncio
+    async def test_long_response_is_truncated_with_marker(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        body = "A" * 25_000
+        _patch_http_client(monkeypatch, _StubDomainResponse(200, body, content_type="text/plain"))
+
+        raw = await http_request("https://example.com/data", max_chars=1_000)
+
+        assert raw.startswith("[200]\n")
+        assert "截断" in raw
+        assert "共 25000 字符" in raw
+        # 仍应保留前缀内容
+        assert "AAAA" in raw
+        # 超出部分确被截掉
+        assert len(raw) < 25_000
+
+    @pytest.mark.asyncio
+    async def test_401_appends_action_hint(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_http_client(monkeypatch, _StubDomainResponse(401, "unauthorized"))
+
+        raw = await http_request("https://example.com/api")
+
+        assert raw.startswith("[401]")
+        assert "[hint]" in raw
+        assert "Cookie" in raw or "get_cookies" in raw
+
+    @pytest.mark.asyncio
+    async def test_429_appends_backoff_hint(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_http_client(monkeypatch, _StubDomainResponse(429, "rate limited"))
+
+        raw = await http_request("https://example.com/api")
+
+        assert "[hint]" in raw
+        assert "退避" in raw or "Retry-After" in raw
+
+    @pytest.mark.asyncio
+    async def test_5xx_appends_retry_hint(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_http_client(monkeypatch, _StubDomainResponse(503, "down"))
+
+        raw = await http_request("https://example.com/api")
+
+        assert "[hint]" in raw
+        assert "503" in raw or "维护" in raw or "限流" in raw
+
+    @pytest.mark.asyncio
+    async def test_network_exception_is_translated(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import httpx as httpx_module
+
+        class ExplodingClient:
+            async def request(self, method: str, url: str, **kwargs: object) -> _StubDomainResponse:  # noqa: ARG002
+                raise httpx_module.ReadTimeout("slow upstream")
+
+        async def fake_get_client() -> ExplodingClient:
+            return ExplodingClient()
+
+        async def fake_validate_url(url: str) -> None:  # noqa: ARG001
+            return None
+
+        monkeypatch.setattr("hawker_agent.tools.http_tools._get_client", fake_get_client)
+        monkeypatch.setattr(
+            "hawker_agent.tools.http_tools._validate_url", fake_validate_url
+        )
+
+        raw = await http_request("https://example.com/api")
+
+        assert raw.startswith("[错误]")
+        assert "ReadTimeout" in raw
+        assert "[hint]" in raw
+        assert "超时" in raw
+
+    @pytest.mark.asyncio
+    async def test_url_blocked_returns_hint(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        async def fake_validate_url(url: str) -> None:  # noqa: ARG001
+            raise ValueError("Blocked request to private/reserved IP: 10.0.0.1")
+
+        monkeypatch.setattr(
+            "hawker_agent.tools.http_tools._validate_url", fake_validate_url
+        )
+
+        raw = await http_request("https://10.0.0.1/api")
+
+        assert raw.startswith("[错误]")
+        assert "[hint]" in raw
+
+
+class TestHttpJsonACI:
+    @pytest.mark.asyncio
+    async def test_pick_extracts_nested_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_http_client(
+            monkeypatch,
+            _StubDomainResponse(
+                200, json_mod.dumps({"data": {"items": [{"id": 1}, {"id": 2}]}})
+            ),
+        )
+
+        data = await http_json("https://example.com/api", pick="data.items")
+
+        assert data == [{"id": 1}, {"id": 2}]
+
+    @pytest.mark.asyncio
+    async def test_pick_missing_key_raises_actionable_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_http_client(
+            monkeypatch, _StubDomainResponse(200, json_mod.dumps({"data": {"x": 1}}))
+        )
+
+        with pytest.raises(ValueError) as exc:
+            await http_json("https://example.com/api", pick="data.items")
+
+        assert "pick='data.items'" in str(exc.value)
+        assert "找不到键" in str(exc.value)
+
+    @pytest.mark.asyncio
+    async def test_json_pointer_extracts_index(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_http_client(
+            monkeypatch,
+            _StubDomainResponse(
+                200, json_mod.dumps({"data": [{"a": 1}, {"a": 2}]})
+            ),
+        )
+
+        data = await http_json(
+            "https://example.com/api", json_pointer="/data/1"
+        )
+
+        assert data == {"a": 2}
+
+    @pytest.mark.asyncio
+    async def test_max_items_truncates_list_with_marker(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        payload = [{"id": i} for i in range(5)]
+        _patch_http_client(
+            monkeypatch, _StubDomainResponse(200, json_mod.dumps(payload))
+        )
+
+        data = await http_json(
+            "https://example.com/api", max_items=2
+        )
+
+        assert isinstance(data, list)
+        assert len(data) == 3  # 2 条真实 + 1 条 _truncated 提示
+        assert data[0] == {"id": 0}
+        assert data[1] == {"id": 1}
+        assert data[2].get("_truncated") is True
+        assert "截断" in data[2].get("hint", "")
+
+    @pytest.mark.asyncio
+    async def test_pick_and_json_pointer_are_mutually_exclusive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_http_client(
+            monkeypatch, _StubDomainResponse(200, json_mod.dumps({"a": 1}))
+        )
+
+        with pytest.raises(ValueError, match="互斥"):
+            await http_json("https://example.com/api", pick="a", json_pointer="/a")
+
+
+def test_status_hint_known_and_fallback() -> None:
+    from hawker_agent.tools.http_tools import _status_hint_for
+
+    assert "401" in (_status_hint_for(401) or "")
+    assert "429" in (_status_hint_for(429) or "")
+    # 未列出的 4xx 走兜底 400 文案
+    assert _status_hint_for(418) is not None
+    fallback_5xx = _status_hint_for(599)
+    assert fallback_5xx is not None
+    assert "500" in fallback_5xx or "5xx" in fallback_5xx.lower()
+    # 2xx 不应返回行动建议
+    assert _status_hint_for(200) is None
+
+
+# ─── browser.actions filtering helpers ────────────────────────────
+
+
+class TestNetworkLogHelpers:
+    def test_normalize_methods_accepts_string(self) -> None:
+        from hawker_agent.browser.actions import _normalize_methods
+
+        assert _normalize_methods("post") == {"POST"}
+        assert _normalize_methods("get, post") == {"GET", "POST"}
+        assert _normalize_methods(None) is None
+        assert _normalize_methods(["Put", "patch"]) == {"PUT", "PATCH"}
+
+    def test_normalize_status_range_accepts_multiple_forms(self) -> None:
+        from hawker_agent.browser.actions import _normalize_status_range
+
+        assert _normalize_status_range(200) == (200, 200)
+        assert _normalize_status_range("200-299") == (200, 299)
+        assert _normalize_status_range("500,599") == (500, 599)
+        assert _normalize_status_range([400, 403]) == (400, 403)
+        assert _normalize_status_range("nope") is None
+        assert _normalize_status_range(None) is None
+
+    def test_entry_content_type_prefers_res_headers(self) -> None:
+        from hawker_agent.browser.actions import _entry_content_type
+
+        entry = {
+            "resHeaders": {"Content-Type": "application/json; charset=utf-8"},
+            "body": "[]",
+        }
+        assert _entry_content_type(entry).startswith("application/json")
+
+    def test_looks_like_data_api_detects_json_post(self) -> None:
+        from hawker_agent.browser.actions import _looks_like_data_api
+
+        good = {
+            "method": "POST",
+            "status": 200,
+            "resHeaders": {"Content-Type": "application/json"},
+            "body": "x" * 500,
+        }
+        framework = {
+            "method": "GET",
+            "status": 200,
+            "resHeaders": {"Content-Type": "text/css"},
+            "body": "body { color: red }",
+        }
+        assert _looks_like_data_api(good) is True
+        assert _looks_like_data_api(framework) is False
+
+    def test_summarize_netlog_entries_picks_errors_and_apis(self) -> None:
+        from hawker_agent.browser.actions import _summarize_netlog_entries
+
+        entries = [
+            {
+                "type": "xhr",
+                "method": "GET",
+                "status": 404,
+                "url": "https://x/a",
+            },
+            {
+                "type": "xhr",
+                "method": "POST",
+                "status": 200,
+                "url": "https://x/api/data",
+                "resHeaders": {"Content-Type": "application/json"},
+                "body": "[" + "{}," * 120 + "{}]",
+            },
+        ]
+        summary = _summarize_netlog_entries(entries)
+        assert summary["total"] == 2
+        assert summary["by_type"].get("xhr") == 2
+        assert any(e["status"] == 404 for e in summary["errors"])
+        assert any("/api/data" in e["url"] for e in summary["likely_data_api"])
+
+    def test_trim_netlog_entry_truncates_body(self) -> None:
+        from hawker_agent.browser.actions import _trim_netlog_entry
+
+        entry = {"url": "https://x", "body": "x" * 2000}
+        trimmed = _trim_netlog_entry(entry)
+        assert len(trimmed["body"]) < 2000
+        assert "截断" in trimmed["body"]
+
+    def test_cookie_domain_matches_treats_subdomains_as_same(self) -> None:
+        from hawker_agent.browser.actions import _cookie_domain_matches
+
+        assert _cookie_domain_matches(".example.com", "example.com") is True
+        assert _cookie_domain_matches("api.example.com", "example.com") is True
+        assert _cookie_domain_matches("other.com", "example.com") is False
+        assert _cookie_domain_matches("", "example.com") is False
+        # needle 为空 → 匹配一切
+        assert _cookie_domain_matches("other.com", "") is True
+
+    def test_project_cookie_slim_by_default(self) -> None:
+        from hawker_agent.browser.actions import _project_cookie
+
+        raw = {
+            "name": "sid",
+            "value": "abc",
+            "domain": "example.com",
+            "path": "/",
+            "httpOnly": True,
+            "sameSite": "Lax",
+            "secure": True,
+        }
+        slim = _project_cookie(raw, verbose=False)
+        assert set(slim.keys()) == {"name", "value", "domain", "path"}
+        assert _project_cookie(raw, verbose=True) is raw
+
+    def test_truncate_js_raw_preserves_sample_and_marks_truncated(self) -> None:
+        from hawker_agent.browser.actions import _truncate_js_raw
+
+        text = "Z" * 50_000
+        result = _truncate_js_raw(text)
+        assert isinstance(result, dict)
+        assert result.get("_truncated") is True
+        assert result.get("len") == 50_000
+        assert len(result.get("sample", "")) < 50_000
+
+        # 短文本原样返回
+        short = "short output"
+        assert _truncate_js_raw(short) == short
+
+    def test_urls_differ_ignores_trailing_slash_and_fragment(self) -> None:
+        from hawker_agent.browser.actions import _urls_differ
+
+        assert _urls_differ("https://a.com/x", "https://a.com/x/") is False
+        assert _urls_differ("https://a.com/x", "https://a.com/x#frag") is False
+        assert _urls_differ("https://a.com/x", "https://a.com/y") is True
+        assert _urls_differ("", "https://a.com/x") is False

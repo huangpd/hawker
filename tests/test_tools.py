@@ -336,6 +336,21 @@ def test_save_result_json_persists_artifact(tmp_path: Path) -> None:
     assert data["artifact"]["content"] == "# done"
 
 
+def test_save_result_json_does_not_duplicate_json_items_artifact(tmp_path: Path) -> None:
+    items = [{"id": 1}, {"id": 2}]
+    result_path = save_result_json(
+        tmp_path,
+        items,
+        json_mod.dumps(items, ensure_ascii=False),
+        final_artifact={"type": "json", "content": items},
+    )
+
+    data = json_mod.loads(result_path.read_text(encoding="utf-8"))
+    assert data["result"] == "[结构化 JSON 结果] 共 2 条记录，详见 items 字段。"
+    assert data["artifact"] == {"type": "json", "content_ref": "items"}
+    assert data["items"] == items
+
+
 def test_normalize_final_artifact_keeps_business_text_unchanged() -> None:
     text = (
         "完成情况：已采集并查看最近 7 条动态，核心字段包含 time、url、text；"
@@ -397,6 +412,19 @@ def test_recover_items_from_artifact_nested_content_items() -> None:
     recovered = recover_items_from_artifact(artifact)
     assert len(recovered) == 2
     assert recovered[0]["url"] == "https://example.com/a"
+
+
+def test_recover_items_from_artifact_does_not_treat_business_dict_as_one_item() -> None:
+    artifact = {
+        "type": "json",
+        "content": {
+            "requested_id": 81,
+            "status": "not_found",
+            "papers": [{"id": 86}, {"id": 87}],
+        },
+    }
+
+    assert recover_items_from_artifact(artifact) == []
 
 
 def test_save_llm_io_json_serializes_complex_payload(tmp_path: Path) -> None:

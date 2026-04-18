@@ -110,11 +110,14 @@ class HawkerNamespace:
         Returns:
             bool: 如果变量应该持久化则返回 True，否则返回 False。
         """
-        if name in self.system: return False
-        if name.startswith("_"): return False
-        if len(name) <= 1: return False
-        if inspect.ismodule(value): return False
-            
+        if name in self.system:
+            return False
+        if name.startswith("_"):
+            return False
+        if len(name) <= 1:
+            return False
+        if inspect.ismodule(value):
+            return False
         return True
 
     def get_llm_view(self) -> dict:
@@ -421,7 +424,10 @@ def _make_final_answer(state: CodeAgentState) -> Callable:
         Callable: final_answer 函数。
     """
     async def final_answer(answer: object) -> None:
-        artifact = normalize_final_artifact(answer)
+        artifact = normalize_final_artifact(
+            answer,
+            expected_output_format=state.expected_output_format,
+        )
         answer_text = artifact_to_answer_text(artifact)
         state.final_artifact_requested = artifact
         state.final_answer_requested = answer_text

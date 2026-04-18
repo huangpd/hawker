@@ -104,13 +104,15 @@ class BrowserSession:
             harvest_targets.extend(list(u_temp_dir.glob("browser-use-downloads-*")))
 
             for d in harvest_targets:
-                if not d.is_dir(): continue
+                if not d.is_dir():
+                    continue
                 try:
                     for f in d.rglob("*"):
                         if f.is_file() and f.stat().st_size > 0:
                             # 避免重复移动同一个文件（多个目录可能有重叠）
-                            if not f.exists(): continue
-                            
+                            if not f.exists():
+                                continue
+
                             dest = self.target_dir / f.name
                             # 处理同名冲突：增加随机后缀
                             if dest.exists():
@@ -126,15 +128,17 @@ class BrowserSession:
         if self._download_path and self._download_path.exists():
             try:
                 shutil.rmtree(self._download_path)
-            except Exception: pass
+            except Exception:
+                pass
 
         u_temp_dir = Path(tempfile.gettempdir())
         for p in u_temp_dir.glob("browser-use-downloads-*"):
             if p.is_dir():
                 try:
                     shutil.rmtree(p)
-                except Exception: pass
-                
+                except Exception:
+                    pass
+
         self.netlog_installed = False
         self.netlog_cursor = 0
         logger.info("浏览器会话已关闭并完成产物归档")

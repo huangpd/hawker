@@ -7,7 +7,7 @@ from hawker_agent.agent.evaluator import (
     build_final_evaluation_messages,
     extract_task_requirements,
 )
-from hawker_agent.agent.runner import _collect_recent_observations
+from hawker_agent.agent.final_delivery import collect_recent_observations
 from hawker_agent.models.state import CodeAgentState
 
 
@@ -35,6 +35,15 @@ class TestEvaluator:
         assert requirements.required_fields == ["title", "url"]
         assert requirements.expects_inline_json is True
         assert requirements.delivery_mode == "inline_json"
+        assert requirements.expected_output_format == "json"
+
+    def test_extract_task_requirements_detects_markdown(self) -> None:
+        requirements = extract_task_requirements("请整理成 Markdown 返回，并保留二级标题")
+        assert requirements.expected_output_format == "markdown"
+
+    def test_extract_task_requirements_defaults_to_text(self) -> None:
+        requirements = extract_task_requirements("请给我一个纯文本总结，不要 Markdown")
+        assert requirements.expected_output_format == "text"
 
     def test_parse_final_evaluation_json(self) -> None:
         result = _parse_final_evaluation('{"accept": false, "reason": "样本字段缺失"}')
@@ -71,7 +80,7 @@ class TestEvaluator:
             {"execution": {"observation": ""}},
             {"execution": {"observation": "第二页 18 条"}},
         ]
-        observations = _collect_recent_observations(state, limit=2)
+        observations = collect_recent_observations(state, limit=2)
         assert observations == ["第一页 20 条", "第二页 18 条"]
 
     def test_collect_recent_observations_skips_error_noise(self) -> None:
@@ -81,7 +90,7 @@ class TestEvaluator:
             {"execution": {"observation": "未找到 ```python``` 代码块"}},
             {"execution": {"observation": "已保存 7 条数据"}},
         ]
-        observations = _collect_recent_observations(state, limit=2)
+        observations = collect_recent_observations(state, limit=2)
         assert observations == ["已保存 7 条数据"]
 
     @pytest.mark.asyncio

@@ -6,8 +6,6 @@ from pathlib import Path
 
 from hawker_agent.config import Settings
 from hawker_agent.observability import (
-    Span,
-    TraceProcessor,
     add_trace_processor,
     bind_log_context,
     clear_log_context,

@@ -4,7 +4,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from hawker_agent.config import get_settings
 from hawker_agent.llm.client import LLMClient
@@ -26,6 +26,41 @@ class TaskRequirements:
     expected_count_hint: int | None = None
     expects_inline_json: bool = False
     delivery_mode: str = "summary_with_structured_items"
+    expected_output_format: Literal["text", "json", "markdown"] | None = None
+
+
+def _detect_expected_output_format(
+    task: str,
+    expects_inline_json: bool,
+) -> Literal["text", "json", "markdown"] | None:
+    """从任务文本中推断用户期望的最终输出格式。"""
+    if expects_inline_json:
+        return "json"
+
+    lowered = task.lower()
+    text_patterns = (
+        r"纯文本",
+        r"plain\s*text",
+        r"不要\s*markdown",
+        r"不用\s*markdown",
+        r"只要\s*文本",
+    )
+    if any(re.search(pattern, lowered, re.I) for pattern in text_patterns):
+        return "text"
+
+    markdown_patterns = (
+        r"markdown",
+        r"\bmd\b",
+        r"用\s*md\b",
+        r"用\s*markdown",
+        r"按\s*markdown",
+        r"请.*markdown.*返回",
+        r"请.*markdown.*输出",
+    )
+    if any(re.search(pattern, lowered, re.I) for pattern in markdown_patterns):
+        return "markdown"
+
+    return None
 
 
 def extract_task_requirements(task: str) -> TaskRequirements:
@@ -36,7 +71,6 @@ def extract_task_requirements(task: str) -> TaskRequirements:
 
     in_field_block = False
     for line in lines:
-        lowered = line.lower()
         if "提取字段" in line or "字段:" in line:
             in_field_block = True
             continue
@@ -72,11 +106,13 @@ def extract_task_requirements(task: str) -> TaskRequirements:
 
     expects_inline_json = bool(re.search(r"返回\s*json|直接返回\s*json|输出\s*json", task, re.I))
     delivery_mode = "inline_json" if expects_inline_json else "summary_with_structured_items"
+    expected_output_format = _detect_expected_output_format(task, expects_inline_json)
     return TaskRequirements(
         required_fields=fields,
         expected_count_hint=expected_count_hint,
         expects_inline_json=expects_inline_json,
         delivery_mode=delivery_mode,
+        expected_output_format=expected_output_format,
     )
 
 

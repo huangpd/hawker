@@ -1,9 +1,8 @@
 import asyncio
 import pytest
-import os
 import re
 from pathlib import Path
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, AsyncMock
 
 from hawker_agent.browser.session import BrowserSession
 from hawker_agent.browser.actions import browser_download, get_cookies

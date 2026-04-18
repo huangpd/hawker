@@ -1,7 +1,7 @@
 import logging
 import re
 import hashlib
-from typing import Any, List, Dict
+from typing import Any, Dict
 
 from browser_use.browser.session import BrowserSession
 from browser_use.dom.views import DOMInteractedElement

@@ -16,11 +16,9 @@ from hawker_agent.observability import clear_log_context, configure_logging
 from hawker_agent.storage.exporter import save_llm_io_json, save_result_json
 from hawker_agent.tools.data_tools import (
     clean_items,
-    ensure,
     normalize_items,
     parse_http_response,
     save_file,
-    summarize_json,
     register_data_tools,
 )
 from hawker_agent.tools.http_tools import fetch, http_json, http_request
@@ -196,7 +194,6 @@ class TestBuildNamespace:
             {
                 "type": "markdown",
                 "content": "# 总结\n已完成",
-                "summary": "已完成",
                 "items": [{"url": "https://example.com"}],
             }
         )
@@ -204,6 +201,15 @@ class TestBuildNamespace:
         assert state.final_artifact_requested["type"] == "markdown"
         assert state.final_artifact_requested["items"] == [{"url": "https://example.com"}]
         assert state.final_answer_requested == "# 总结\n已完成"
+
+    @pytest.mark.asyncio
+    async def test_final_answer_aligns_plain_string_to_expected_markdown(self) -> None:
+        state = CodeAgentState(expected_output_format="markdown")
+        ns = self._get_ns(state, "/tmp/test")
+        await ns["final_answer"]("# 标题\n\n- A")
+        assert state.final_artifact_requested is not None
+        assert state.final_artifact_requested["type"] == "markdown"
+        assert state.final_answer_requested == "# 标题\n\n- A"
 
     @pytest.mark.asyncio
     async def test_save_checkpoint(self) -> None:
@@ -322,12 +328,12 @@ def test_save_result_json_persists_artifact(tmp_path: Path) -> None:
         tmp_path,
         [{"id": 1}],
         "done",
-        final_artifact={"type": "markdown", "content": "# done", "summary": "done"},
+        final_artifact={"type": "markdown", "content": "# done"},
     )
 
     data = json_mod.loads(result_path.read_text(encoding="utf-8"))
     assert data["artifact"]["type"] == "markdown"
-    assert data["artifact"]["summary"] == "done"
+    assert data["artifact"]["content"] == "# done"
 
 
 def test_normalize_final_artifact_keeps_business_text_unchanged() -> None:
@@ -340,16 +346,30 @@ def test_normalize_final_artifact_keeps_business_text_unchanged() -> None:
     )
 
     assert artifact["content"] == text
-    assert "result.json" in artifact["summary"]
+    assert "summary" not in artifact
 
 
-def test_normalize_final_artifact_builds_shorter_summary_for_long_text() -> None:
+def test_normalize_final_artifact_drops_summary_field_from_wrapper() -> None:
     content = "第一段总结。\n\n" + ("这是正文。 " * 80)
     artifact = normalize_final_artifact({"type": "text", "content": content, "summary": content})
 
     assert artifact["content"] == content.strip()
-    assert len(artifact["summary"]) < len(artifact["content"])
-    assert artifact["summary"].startswith("第一段总结。")
+    assert "summary" not in artifact
+
+
+def test_normalize_final_artifact_aligns_to_expected_markdown() -> None:
+    artifact = normalize_final_artifact("# 标题\n\n- A", expected_output_format="markdown")
+    assert artifact["type"] == "markdown"
+    assert artifact["content"] == "# 标题\n\n- A"
+
+
+def test_normalize_final_artifact_parses_expected_json_string() -> None:
+    artifact = normalize_final_artifact(
+        '{"items": [{"url": "https://example.com"}]}',
+        expected_output_format="json",
+    )
+    assert artifact["type"] == "json"
+    assert artifact["items"] == [{"url": "https://example.com"}]
 
 
 def test_normalize_final_artifact_does_not_guess_business_dict_wrapper() -> None:

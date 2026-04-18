@@ -8,7 +8,7 @@ import shutil
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from hawker_agent.browser.cdp import get_cdp, run_js
 from hawker_agent.browser.dom_utils import (
@@ -406,6 +406,8 @@ async def browser_download(
         f"file={final_path.name}",
     )
     return f"[OK] 已通过浏览器下载到 {final_path}"
+
+
 async def js(session: BrowserSession, code: str) -> Any:
     """在当前页面执行 JavaScript 代码，并返回完整执行结果。
 

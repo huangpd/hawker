@@ -1,129 +1,183 @@
-# HawkerAgent: Autonomous LLM-Driven Web Intelligence
+# Hawker
 
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![Package Manager: uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
-[![Framework: Browser-use](https://img.shields.io/badge/Framework-Browser--use-orange.svg)](https://github.com/browser-use/browser-use)
+[English](./README.md) | [简体中文](./README.zh-CN.md)
 
-**HawkerAgent** 是一个面向工业级需求的自主网络智能体框架。它基于先进的 LLM 推理模型，通过自动化浏览器、流量分析和动态代码生成，将复杂的 Web 交互转化为高可靠、可观测的结构化数据流。
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](./LICENSE)
+[![Ruff](https://img.shields.io/badge/lint-ruff-orange.svg)](https://github.com/astral-sh/ruff)
+[![Mypy](https://img.shields.io/badge/types-mypy-blue.svg)](https://mypy-lang.org/)
 
----
+Hawker is an autonomous web intelligence agent for turning browser interactions, network traffic, and LLM reasoning into auditable structured outputs.
 
-## ⚡ 极速安装 (Recommended)
+It is designed for workflows where a plain scraper is not enough:
 
-本项目推荐使用 [uv](https://github.com/astral-sh/uv) 进行环境管理。只需三行命令，即可完成从环境到浏览器的全部准备：
+- Interactive pages and multi-step flows
+- Browser-assisted extraction with API replay when available
+- Reproducible run artifacts for debugging and review
+- Structured final delivery with traceability
+
+## Project Status
+
+Hawker is under active development and should currently be considered **experimental but usable**.
+
+Recommended use cases:
+
+- Internal research and automation
+- Agent engineering experiments
+- Browser-first data collection pipelines
+
+Not yet recommended without additional hardening:
+
+- Unreviewed production deployments in regulated environments
+- Security-sensitive workloads without dependency governance and secret isolation
+
+## Why Hawker
+
+Most web automation stacks stop at "the task ran" or "the page was clicked". Hawker focuses on what happens after that:
+
+- **Structured delivery**: final outputs are written to `result.json` with items and delivery artifacts.
+- **Operational traceability**: every run emits logs, notebook-style execution history, and LLM IO traces.
+- **Browser + network strategy**: the agent can favor API replay over fragile DOM extraction when network signals are available.
+- **Long-task ergonomics**: history compression, runtime checkpoints, and memory-assisted execution reduce prompt bloat and retry cost.
+
+## Architecture
+
+At a high level, Hawker is composed of:
+
+- **Agent runtime**: step orchestration, execution, final-delivery gating, and stopping logic
+- **Browser layer**: Playwright/browser-use based interaction, DOM snapshots, and network logging
+- **LLM layer**: provider abstraction, token accounting, evaluator/healer sidecars
+- **Storage layer**: run artifacts, result export, notebook export, and memory persistence
+
+Core output directories per run:
+
+- `hawker_file/<run_id>/result/result.json`: user-facing delivery artifact
+- `hawker_file/<run_id>/run.ipynb`: executable notebook-style trace
+- `hawker_file/<run_id>/llm_io.json`: serialized model interaction log
+- `log/<run_id>/`: application and run logs
+
+## Quick Start
+
+### 1. Install dependencies
+
+This project uses [`uv`](https://github.com/astral-sh/uv).
 
 ```bash
-# 1. 克隆并进入项目
-git clone https://github.com/your-repo/hawker-agent.git && cd hawker
-
-# 2. 使用 uv 自动创建环境、同步依赖并安装
+git clone <your-fork-or-repo-url>
+cd hawker
 uv sync
-
-# 3. 安装浏览器核心
 uv run playwright install chromium
 ```
 
-> 没有安装 `uv`？只需运行 `curl -LsSf https://astral.sh/uv/install.sh | sh` (macOS/Linux)
-
----
-
-## 🌟 核心工程特性
-
-- 🧠 **Multi-Agent 推理适配**：针对 Gemini 2.0 Flash Thinking、OpenAI o1/o3 及 DeepSeek-R1 优化，原生支持逻辑复杂的长链推理。
-- ⚡ **Async-Native 架构**：全链路基于 `asyncio` 设计，彻底告别 `nest_asyncio` 等同步黑盒，确保在生产环境中的极致稳定性。
-- 🔍 **Traffic-Aware 策略**：内置 CDP 拦截器，自动通过 `get_network_log` 分析接口流量，优先实现 **API 重放** 而非脆弱的 DOM 爬取。
-- 🛡️ **分布式追踪 (Observability)**：内置 `trace_id` 传播机制，所有 LLM 请求、代码执行和文件 IO 均可跨协程追踪。
-- 📦 **自动化产物收割**：智能识别浏览器下载行为，自动将 PDF、CSV 等文件移动并归档至任务专属目录。
-
----
-
-## ⚙️ 配置环境
-
-复制 `.env.example` 并配置您的模型参数：
+### 2. Configure environment
 
 ```bash
 cp .env.example .env
 ```
 
-核心变量参考：
+Typical settings:
+
 ```ini
-OPENAI_API_KEY=AIza...  # 支持 Google 官方 Key 或 OpenAI 兼容 Key
+OPENAI_API_KEY=...
 MODEL_NAME=gemini/gemini-2.0-flash-thinking-preview-01-21
-HEADLESS=false          # 调试建议设为 false 以观察行为
-```
-
-### 复用本机浏览器登录态
-
-如果目标网站需要登录，推荐直接在 `.env` 中配置浏览器用户目录，让 HawkerAgent 复用你已经登录过的浏览器状态。
-
-方式 A：复用本机 Chrome Profile
-
-```ini
 HEADLESS=false
-BROWSER_EXECUTABLE_PATH=/Applications/Google Chrome.app/Contents/MacOS/Google Chrome
-BROWSER_USER_DATA_DIR=/Users/yourname/Library/Application Support/Google/Chrome
-BROWSER_PROFILE_DIRECTORY=Default
 ```
 
-说明：
-- `BROWSER_PROFILE_DIRECTORY` 常见值为 `Default`、`Profile 1`、`Profile 2`
-- 这种方式最适合“直接使用我平时登录过的网站状态”
-- 最好先关闭本机 Chrome，避免 profile lock 导致启动失败
+If your target site requires authentication, Hawker can reuse browser state via:
 
-方式 B：使用导出的 `storage_state.json`
+- local Chrome user data directory
+- exported `storage_state.json`
+- an existing browser CDP endpoint
 
-```ini
-BROWSER_STORAGE_STATE=/absolute/path/to/storage_state.json
-```
+See `.env.example` for the currently supported variables.
 
-说明：
-- 适合不想直接复用真实浏览器目录的场景
-- 更稳定，也更适合部署环境
+### 3. Run a task
 
-方式 C：连接到已启动浏览器的 CDP
+Interactive task file:
 
-```ini
-BROWSER_CDP_URL=http://127.0.0.1:9222
-```
-
-说明：
-- 适合你已经手动启动了一个带 `remote-debugging-port` 的浏览器
-- 可以避免真实 profile 被锁住
-
----
-
-## 🚀 运行与开发
-
-### A. 交互式开发 (run.py)
-最适合编写复杂任务。直接编辑根目录下的 `run.py` 顶部的 `TASK` 变量：
-
-```python
-TASK = "到 Arxiv 下载 2026 年关于 Web Agent 的 PDF 论文，并归档摘要。"
-```
-执行：`uv run run.py`
-
-### B. 生产级 CLI
 ```bash
-uv run python -m hawker_agent.cli "采集 GitHub Trending 数据" --max-steps 15
+uv run run.py
 ```
 
----
+CLI mode:
 
-## 📂 观测与产物 (Artifacts)
+```bash
+uv run python -m hawker_agent.cli "Collect GitHub Trending repositories" --max-steps 15
+```
 
-每次运行产生的 `run_id` 都会拆分为两类目录：
+## Usage Model
 
-- **用户交付结果**: `hawker_file/{run_id}/result/result.json`
-- **工程调试产物**: `hawker_file/{run_id}/run.ipynb`、`hawker_file/{run_id}/llm_io.json`、`log/{run_id}/app.log`、`log/{run_id}/run.log`
-- **归档文件**: 浏览器下载的 PDF 或数据表会自动出现在 `hawker_file/{run_id}/` 下。
+Hawker is optimized for tasks that require judgment, not just selectors.
 
----
+Examples:
 
-## 🧠 深度对齐 (Engineering Specs)
+- "Collect the latest papers on Web Agents and download the PDFs"
+- "Open a product listing page, identify the real JSON data API, then replay it"
+- "Summarize the latest posts from a public profile and return structured items"
 
-- **AST Sandbox**: 动态分析 LLM 生成的代码，智能补全 `await` 包装，防止协程泄露。
-- **Memory Compression**: 自动根据 Token 阈值对中间历史进行摘要压缩，确保长程任务不爆上下文。
-- **429 Backoff**: 指数级退避重试策略，优雅应对 API 频率限制。
+The normal execution loop is:
 
----
-*Powered by HawkerAgent Engineering Team - 2026*
+1. Explore the page and network surface
+2. Prefer replayable APIs when possible
+3. Fall back to DOM extraction when needed
+4. Validate and normalize collected items
+5. Submit a final answer that passes delivery checks
+
+## Development
+
+Install the development toolchain:
+
+```bash
+uv sync --extra dev
+```
+
+Common commands:
+
+```bash
+uv run ruff check hawker_agent tests run.py
+uv run mypy hawker_agent
+uv run pytest -q
+```
+
+The repository currently uses:
+
+- `ruff` for linting
+- `mypy` in strict mode
+- `pytest` and `pytest-asyncio` for tests
+
+## Security
+
+Please do not open public issues for sensitive vulnerabilities.
+
+For security reporting instructions, see [SECURITY.md](./SECURITY.md).
+
+## Contributing
+
+Contributions are welcome. Before opening a pull request, please:
+
+1. Run lint and tests locally
+2. Keep changes focused and reviewable
+3. Update documentation when behavior changes
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for the contributor workflow.
+
+## License
+
+This project is licensed under the [Apache License 2.0](./LICENSE).
+
+Third-party dependencies remain under their respective licenses. See:
+
+- [NOTICE](./NOTICE)
+- [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)
+
+## Acknowledgements
+
+Hawker builds on top of several excellent open source projects. In particular:
+
+- [browser-use](https://github.com/browser-use/browser-use) for browser automation primitives and agent-oriented browser workflows
+- [Playwright for Python](https://github.com/microsoft/playwright-python) for browser control and automation foundations
+- [LiteLLM](https://github.com/BerriAI/litellm) for multi-provider LLM access
+- [Langfuse](https://github.com/langfuse/langfuse) for observability and tracing integration
+- [HTTPX](https://github.com/encode/httpx), [Typer](https://github.com/fastapi/typer), [Rich](https://github.com/Textualize/rich), [Jinja](https://github.com/pallets/jinja), [Pydantic Settings](https://github.com/pydantic/pydantic-settings), [nbformat](https://github.com/jupyter/nbformat), and [Boto3](https://github.com/boto/boto3)
+
+We are grateful to the maintainers and contributors of these projects.

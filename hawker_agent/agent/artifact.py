@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 
 from hawker_agent.tools.data_tools import normalize_items
 
 _EXPLICIT_ARTIFACT_TYPES = {"text", "json", "markdown"}
 
 
-def normalize_final_artifact(answer: object) -> dict[str, Any]:
+def normalize_final_artifact(
+    answer: object,
+    expected_output_format: Literal["text", "json", "markdown"] | None = None,
+) -> dict[str, Any]:
     """将 final_answer 输入规范化为统一 artifact 结构。"""
     if isinstance(answer, str):
         text = answer.strip()
@@ -16,18 +19,29 @@ def normalize_final_artifact(answer: object) -> dict[str, Any]:
             try:
                 parsed = json.loads(text)
             except Exception:
-                return _finalize_artifact({"type": "text", "content": answer, "summary": answer})
+                return _apply_expected_output_format(
+                    _finalize_artifact({"type": "text", "content": answer}),
+                    expected_output_format,
+                )
             artifact = _artifact_from_structured(parsed)
             artifact.setdefault("content", answer)
-            artifact.setdefault("summary", answer)
-            return _finalize_artifact(artifact)
-        return _finalize_artifact({"type": "text", "content": answer, "summary": answer})
+            return _apply_expected_output_format(_finalize_artifact(artifact), expected_output_format)
+        return _apply_expected_output_format(
+            _finalize_artifact({"type": "text", "content": answer}),
+            expected_output_format,
+        )
 
     if isinstance(answer, (list, dict)):
-        return _finalize_artifact(_artifact_from_structured(answer))
+        return _apply_expected_output_format(
+            _finalize_artifact(_artifact_from_structured(answer)),
+            expected_output_format,
+        )
 
     text = str(answer)
-    return _finalize_artifact({"type": "text", "content": text, "summary": text})
+    return _apply_expected_output_format(
+        _finalize_artifact({"type": "text", "content": text}),
+        expected_output_format,
+    )
 
 
 def artifact_to_answer_text(artifact: dict[str, Any]) -> str:
@@ -45,10 +59,6 @@ def artifact_to_answer_text(artifact: dict[str, Any]) -> str:
     content = artifact.get("content")
     if isinstance(content, str):
         return content
-
-    summary = artifact.get("summary")
-    if isinstance(summary, str) and summary.strip():
-        return summary
 
     items = artifact.get("items")
     if items:
@@ -95,15 +105,12 @@ def _artifact_from_structured(value: list | dict) -> dict[str, Any]:
         is_items_delivery = "items" in value and not artifact_type
         if is_explicit_wrapper or is_items_delivery:
             content = value.get("content")
-            summary = value.get("summary")
             items = value.get("items")
             normalized: dict[str, Any] = {
                 "type": artifact_type or "json",
             }
             if content is not None:
                 normalized["content"] = content
-            if isinstance(summary, str):
-                normalized["summary"] = summary
             if items is not None:
                 try:
                     normalized["items"] = normalize_items(items)
@@ -122,28 +129,50 @@ def _artifact_from_structured(value: list | dict) -> dict[str, Any]:
 
 
 def _finalize_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
-    """规范 artifact 的 summary，但不改写正文 content。"""
+    """规范 artifact 的基础结构，但不改写正文 content 语义。"""
     normalized = dict(artifact)
     content = normalized.get("content")
-    summary = normalized.get("summary")
 
     if isinstance(content, str):
         normalized["content"] = content.strip()
-        if not isinstance(summary, str) or not summary.strip():
-            normalized["summary"] = _build_summary_from_text(normalized["content"])
 
-    if isinstance(normalized.get("summary"), str):
-        normalized["summary"] = _build_summary_from_text(normalized["summary"])
-
-    if normalized.get("summary") == normalized.get("content") and isinstance(normalized.get("content"), str):
-        normalized["summary"] = _build_summary_from_text(normalized["content"])
-
+    normalized.pop("summary", None)
     return normalized
 
 
-def _build_summary_from_text(text: str, max_len: int = 280) -> str:
-    """从正文生成简短摘要。"""
-    compact = " ".join(part.strip() for part in text.splitlines() if part.strip())
-    if len(compact) <= max_len:
-        return compact
-    return compact[: max_len - 3].rstrip() + "..."
+def _apply_expected_output_format(
+    artifact: dict[str, Any],
+    expected_output_format: Literal["text", "json", "markdown"] | None,
+) -> dict[str, Any]:
+    """按任务要求做最小化格式对齐，不改写正文内容。"""
+    if not expected_output_format:
+        return artifact
+
+    normalized = dict(artifact)
+    artifact_type = str(normalized.get("type") or "").strip().lower()
+    content = normalized.get("content")
+
+    if expected_output_format == "markdown":
+        if artifact_type == "text" and isinstance(content, str):
+            normalized["type"] = "markdown"
+        return normalized
+
+    if expected_output_format == "text":
+        if artifact_type == "markdown":
+            normalized["type"] = "text"
+        return normalized
+
+    if expected_output_format == "json":
+        if artifact_type == "json":
+            return normalized
+        if isinstance(content, str):
+            stripped = content.strip()
+            if stripped[:1] in "[{":
+                try:
+                    parsed = json.loads(stripped)
+                except Exception:
+                    return normalized
+                return _finalize_artifact(_artifact_from_structured(parsed))
+        return normalized
+
+    return normalized

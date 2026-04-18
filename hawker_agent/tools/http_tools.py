@@ -10,7 +10,7 @@ from typing import Any
 
 import httpx
 
-from hawker_agent.observability import emit_observation, emit_tool_observation
+from hawker_agent.observability import emit_tool_observation
 from hawker_agent.tools.data_tools import clean_items, ensure, parse_http_response, summarize_json
 from hawker_agent.tools.registry import ToolRegistry
 

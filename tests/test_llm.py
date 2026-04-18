@@ -346,7 +346,6 @@ class TestLLMClient:
         cfg.model_name = "gpt-5.4"
         client = LLMClient(cfg=cfg)
 
-        responses_output_text = SimpleNamespace(text="fallback ok")
         responses_content = SimpleNamespace(type="output_text", text="fallback ok")
         responses_message = SimpleNamespace(type="message", content=[responses_content])
         mock_response = SimpleNamespace(

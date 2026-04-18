@@ -1,22 +1,15 @@
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 import time
 from pathlib import Path
 from typing import Literal
 
-from hawker_agent.agent.artifact import (
-    artifact_to_answer_text,
-    normalize_final_artifact,
-    recover_items_from_artifact,
-)
-from hawker_agent.agent.executor import execute
-from hawker_agent.agent.evaluator import evaluate_final_delivery, extract_task_requirements
+from hawker_agent.agent.artifact import normalize_final_artifact, recover_items_from_artifact
+from hawker_agent.agent.evaluator import extract_task_requirements
 from hawker_agent.agent.namespace import HawkerNamespace, build_namespace
-from hawker_agent.agent.parser import parse_response
 from hawker_agent.agent.prompts import build_system_prompt
+from hawker_agent.agent.step_runtime import run_agent_step
 from hawker_agent.browser.session import BrowserSession
 from hawker_agent.config import get_settings
 from hawker_agent.llm.client import LLMClient
@@ -26,12 +19,11 @@ from hawker_agent.memory.store import MemoryStore, build_raw_code_memories
 from hawker_agent.models.cell import CodeCell
 from hawker_agent.models.history import CodeAgentHistoryList
 from hawker_agent.models.result import CodeAgentResult
-from hawker_agent.models.state import CodeAgentState, TokenStats
+from hawker_agent.models.state import CodeAgentState
 from hawker_agent.models.step import CodeAgentStepMetadata
 from hawker_agent.observability import trace, ToolStatsProcessor, add_trace_processor, remove_trace_processor
 from hawker_agent.storage.exporter import export_notebook, save_llm_io_json, save_result_json
-from hawker_agent.storage.logger import init_run_dir, log_step, log_summary
-from hawker_agent.tools.data_tools import normalize_items
+from hawker_agent.storage.logger import init_run_dir, log_summary
 from hawker_agent.tools.http_tools import close_http_clients
 from hawker_agent.tools.registry import ToolRegistry
 
@@ -61,80 +53,23 @@ def _build_memory_workspace_entries(matches: list) -> list[str]:
     return entries[:6]
 
 
-def _recover_items_from_final_answer(answer: str) -> list[dict]:
-    """从 final_answer 文本中兜底恢复结构化 items。"""
-    artifact = normalize_final_artifact(answer)
-    return recover_items_from_artifact(artifact)
-
-
-def _resolve_final_delivery_items(task: str, final_answer: str, state: CodeAgentState) -> list[dict]:
-    """确定最终交付评估应使用哪一份 items。
-
-    默认使用运行时累积的 ``state.items``。当任务要求 inline JSON 且
-    ``final_answer`` 中携带了合法 ``items`` 时，优先把这份内联结果视为
-    最终交付候选，避免早期探索阶段 append 的脏数据绑架最终验收。
-    """
+def _build_output_format_instruction(task: str) -> str:
+    """根据任务要求生成一条简洁的最终输出格式指令。"""
     requirements = extract_task_requirements(task)
-    if requirements.delivery_mode != "inline_json":
-        return state.items.to_list()
-
-    # 对 inline_json 任务，最终交付里的 items 才是最接近“用户要什么”的候选真值。
-    # 运行过程中 append_items() 累积的是工作缓存，里面可能混入早期探索阶段的误采样本。
-    # 因此 evaluator 不应被旧缓存绑死，而应优先检查 final_answer 内联提交的结果。
-    recovered_items = _recover_items_from_final_answer(final_answer)
-    return recovered_items or state.items.to_list()
-
-
-def _replace_state_items(state: CodeAgentState, items: list[dict]) -> None:
-    """用最终交付结果覆盖运行态 items。
-
-    这里是系统内部的一致性收敛，不暴露成模型工具。仅在 inline JSON
-    交付通过最终验收后调用，用来把运行过程中的临时/错误采集结果
-    收敛为最终可落盘的结构化数据。
-    """
-    # 这里不是给模型增加一个“replace_items”工具，而是系统在最终放行后做内部收敛。
-    # 只有 inline_json 交付通过评估时，才允许最终交付覆盖运行时缓存。
-    # 这样 result.json / items_count / 最终 answer 才能保持一致。
-    state.items.clear()
-    state.items.append(normalize_items(items))
-
-
-def _validate_final_answer_request(
-    step: int,
-    state: CodeAgentState,
-    step_meta: CodeAgentStepMetadata,
-) -> str | None:
-    """校验本步是否允许接受 final_answer。
-
-    返回拒绝原因；返回 None 表示允许完成。
-    """
-    if step <= 1:
-        return "首步禁止直接完成。请先观察样本并确认提取策略。"
-
-    first_collection_step = (
-        step_meta.activity_before == 0 and state.activity_marker > step_meta.activity_before
+    output_format = requirements.expected_output_format
+    if output_format == "json":
+        return (
+            "最终交付格式要求：用户要求 JSON。调用 final_answer() 时，"
+            "请优先提交合法 JSON，或显式使用 {'type': 'json', 'content': ...}。"
+        )
+    if output_format == "markdown":
+        return (
+            "最终交付格式要求：用户要求 Markdown。调用 final_answer() 时，"
+            "请使用 Markdown 正文，最好显式使用 {'type': 'markdown', 'content': ...}。"
+        )
+    return (
+        "最终交付格式要求：默认返回纯文本语义总结。若无明确要求，不要把最终答案包装成 JSON。"
     )
-    if first_collection_step:
-        return "这是首次采集到数据的步骤。请下一步先检查样本、清洗字段或验证去重后再完成任务。"
-
-    return None
-
-
-def _collect_recent_observations(state: CodeAgentState, limit: int = 2) -> list[str]:
-    """提取最近少量 observation，供最终交付评估使用。"""
-    observations: list[str] = []
-    for record in reversed(state.llm_records):
-        execution = record.get("execution") or {}
-        obs = str(execution.get("observation") or "").strip()
-        if not obs:
-            continue
-        # 最终交付评估只关心最近成功采集证据，不把旧的执行错误噪音带进去。
-        if "[执行错误]" in obs or "未找到 ```python``` 代码块" in obs:
-            continue
-        observations.append(obs[:500])
-        if len(observations) >= limit:
-            break
-    return list(reversed(observations))
 
 
 def _inject_reflection_prompts(
@@ -236,9 +171,13 @@ def _build_result(
     total_duration = time.time() - state.started_at
     final_answer = state.answer
     final_artifact = state.final_artifact
+    requirements = extract_task_requirements(task)
 
     if not final_artifact and final_answer:
-        final_artifact = normalize_final_artifact(final_answer)
+        final_artifact = normalize_final_artifact(
+            final_answer,
+            expected_output_format=requirements.expected_output_format,
+        )
         state.final_artifact = final_artifact
 
     if not state.items and final_artifact:
@@ -279,7 +218,10 @@ def _build_result(
 
         # 因为 items 字段已经包含了完整数据。保持 answer 作为纯语义总结。
         final_answer = " ".join(parts[:3]) + ("\n" + "\n".join(parts[3:]) if len(parts) > 3 else "")
-        final_artifact = normalize_final_artifact(final_answer)
+        final_artifact = normalize_final_artifact(
+            final_answer,
+            expected_output_format=requirements.expected_output_format,
+        )
         state.final_artifact = final_artifact
 
     # 执行持久化
@@ -338,6 +280,8 @@ async def run(
     """
     cfg = get_settings()
     state = CodeAgentState()
+    requirements = extract_task_requirements(task)
+    state.expected_output_format = requirements.expected_output_format
     # 初始化运行目录和日志
     run_dir, log_dir, log_path = init_run_dir(task, cfg, run_id=state.run_id, trace_id=state.trace_id)
     state.run_dir = run_dir
@@ -363,6 +307,7 @@ async def run(
                 custom_content = custom_path.read_text(encoding="utf-8").strip()
                 if custom_content:
                     instructions += "\n\n" + custom_content
+            instructions += "\n\n" + _build_output_format_instruction(task)
 
             history = CodeAgentHistoryList.from_task(
                 task,
@@ -450,241 +395,28 @@ async def run(
 
                 for step in range(1, max_steps + 1):
                     with trace(f"agent_step_{step}", step=step):
-                        # 1. 准备并调用 LLM
-                        prompt_package = history.build_prompt_package()
-                        prompt_msgs = prompt_package["messages"]
-                        llm_response = await llm.complete(prompt_msgs)
-                        model_output = parse_response(llm_response.text)
-
-                        # 2. 处理截断异常
-                        if llm_response.is_truncated:
-                            logger.warning("Step %d: 响应异常: %s", step, llm_response.truncate_reason)
-                            if model_output.has_code:
-                                logger.warning("Step %d: 截断响应包含可执行代码，继续执行已解析代码块", step)
-                            else:
-                                state.llm_records.append(
-                                    {
-                                        "step": step,
-                                        "prompt": prompt_package,
-                                        "llm_response": {
-                                            "text": llm_response.text,
-                                            "input_tokens": llm_response.input_tokens,
-                                            "output_tokens": llm_response.output_tokens,
-                                            "cached_tokens": llm_response.cached_tokens,
-                                            "total_tokens": llm_response.total_tokens,
-                                            "cost": llm_response.cost,
-                                            "is_truncated": llm_response.is_truncated,
-                                            "truncate_reason": llm_response.truncate_reason,
-                                            "raw": llm_response.raw,
-                                        },
-                                        "parsed_output": None,
-                                        "execution": None,
-                                    }
-                                )
-                                history.add_user(
-                                    f"[System] 上一次响应异常: {llm_response.truncate_reason}\n"
-                                    "请写一个简短计划(1-2句)，然后尝试执行一个简单的单步操作。"
-                                )
-                                continue
-
-                        # 3. 解析响应
-                        activity_before, progress_before = state.snapshot_markers()
-                        step_meta = CodeAgentStepMetadata(
-                            step_no=step,
-                            activity_before=activity_before,
-                            progress_before=progress_before,
-                        )
-
-                        logger.info("Thought: %s", model_output.thought[:150] + "..." if len(model_output.thought) > 150 else model_output.thought)
-
-                        # 4. 执行代码
-                        if model_output.has_code:
-                            observation = await execute(model_output.code, namespace, state=state, step=step)
-                        else:
-                            observation = "[错误] 未找到 ```python``` 代码块"
-                        
-                        # 处理侧道注入的 DOM 状态
-                        if state.pending_dom:
-                            history.inject_dom(state.pending_dom)
-                            state.pending_dom = None
-                        
-                        step_meta.output = observation
-                        if "[执行错误]" in observation:
-                            step_meta.error = observation
-                        
-                        # 5. 处理 final_answer 申请
-                        if state.final_answer_requested:
-                            if step_meta.error:
-                                # 报错了则拒绝本步的完成申请
-                                logger.warning("Step %d: final_answer 被拒绝，因为代码执行报错", step)
-                                state.final_answer_requested = None
-                                state.final_artifact_requested = None
-                                observation = f"{observation}\n[final_answer已拒绝] 本步有执行错误"
-                            else:
-                                reject_reason = _validate_final_answer_request(step, state, step_meta)
-                                if reject_reason:
-                                    logger.warning("Step %d: final_answer 被拒绝: %s", step, reject_reason)
-                                    state.final_answer_requested = None
-                                    state.final_artifact_requested = None
-                                    observation = (
-                                        f"{observation}\n[final_answer已拒绝] {reject_reason}"
-                                    )
-                                    history.add_user(
-                                        "[System 提示] 本步 final_answer 已被拒绝。\n"
-                                        f"原因: {reject_reason}\n"
-                                        "请优先检查样本数据、关键字段是否为空/为0、以及选择器是否正确，"
-                                        "必要时重新提取后再提交最终结果。"
-                                    )
-                                else:
-                                    # 最终交付评估优先看“这次准备交付什么”，而不是无条件看历史缓存。
-                                    # 尤其 inline_json 任务里，final_answer.items 可能是在纠正早期误采的脏数据。
-                                    final_answer_text = state.final_answer_requested or ""
-                                    delivery_items = _resolve_final_delivery_items(
-                                        task,
-                                        final_answer_text,
-                                        state,
-                                    )
-                                    evaluation = await evaluate_final_delivery(
-                                        task=task,
-                                        final_answer=final_answer_text,
-                                        items=delivery_items,
-                                        recent_observations=_collect_recent_observations(state),
-                                        state=state,
-                                    )
-                                    if evaluation and not evaluation.accept:
-                                        logger.warning("Step %d: final_answer 被评估器拒绝: %s", step, evaluation.reason)
-                                        observation = (
-                                            f"{observation}\n[final_answer已拒绝] {evaluation.reason}"
-                                        )
-                                        history.add_user(
-                                            "[System 提示] 最终交付已被评估器拒绝。\n"
-                                            f"原因: {evaluation.reason}\n"
-                                            "请基于当前样本、字段完整性和最近 observation 修正后再重新提交 final_answer。"
-                                        )
-                                        state.final_answer_requested = None
-                                        state.final_artifact_requested = None
-                                    else:
-                                        requirements = extract_task_requirements(task)
-                                        if requirements.delivery_mode == "inline_json":
-                                            recovered_items = _recover_items_from_final_answer(final_answer_text)
-                                            if recovered_items:
-                                                # 评估通过后，把最终交付结果回写成正式 items。
-                                                # 否则 result.json 仍会落盘旧缓存，出现“answer 是 4 条、产物是 5 条”的分裂状态。
-                                                _replace_state_items(state, recovered_items)
-                                                logger.info(
-                                                    "Step %d: inline_json 交付已覆盖运行态 items，最终条数=%d",
-                                                    step,
-                                                    len(recovered_items),
-                                                )
-                                        logger.info("Step %d: 任务完成申请被接受", step)
-                                        state.done = True
-                                        state.answer = final_answer_text
-                                        state.final_artifact = state.final_artifact_requested
-
-                        # 6. 更新状态与统计
-                        state.token_stats.add(
-                            llm_response.input_tokens,
-                            llm_response.output_tokens,
-                            llm_response.cached_tokens,
-                            llm_response.cost
-                        )
-
-                        # 判断进度
-                        progress_made = step_meta.has_progress(state)
-                        if progress_made:
-                            no_progress_steps = 0
-                        else:
-                            no_progress_steps += 1
-                        state.no_progress_streak = no_progress_steps
-                        if state.memory_guided_dom_steps_remaining > 0:
-                            state.memory_guided_dom_steps_remaining -= 1
-                            logger.info(
-                                "记忆引导DOM护栏剩余步数: %d",
-                                state.memory_guided_dom_steps_remaining,
-                            )
-
-                        # 7. 固化 CodeCell 并记录日志
-                        cell = step_meta.to_cell(model_output, state.token_stats, len(state.items))
-                        cells.append(cell)
-                        log_step(log_path, step, step_meta.elapsed(), state.token_stats, model_output.thought, model_output.code, observation)
-
-                        # 8. 更新对话历史
-                        session_vars = namespace.get_llm_view()
-                        history.record_step(
+                        step_result = await run_agent_step(
                             step=step,
+                            task=task,
                             max_steps=max_steps,
-                            assistant_content=llm_response.text,
-                            observation=observation,
-                            namespace_view=session_vars,
-                            items_count=len(state.items),
-                            total_tokens=state.token_stats.total_tokens,
-                            max_total_tokens=cfg.max_total_tokens,
-                            progress=progress_made,
-                            had_error=bool(step_meta.error),
+                            cfg=cfg,
+                            llm=llm,
+                            history=history,
+                            namespace=namespace,
+                            state=state,
+                            log_path=log_path,
+                            cells=cells,
                             no_progress_steps=no_progress_steps,
+                            inject_reflection_prompts=_inject_reflection_prompts,
                         )
-                        state.llm_records.append(
-                            {
-                                "step": step,
-                                "prompt": prompt_package,
-                                "llm_response": {
-                                    "text": llm_response.text,
-                                    "input_tokens": llm_response.input_tokens,
-                                    "output_tokens": llm_response.output_tokens,
-                                    "cached_tokens": llm_response.cached_tokens,
-                                    "total_tokens": llm_response.total_tokens,
-                                    "cost": llm_response.cost,
-                                    "is_truncated": llm_response.is_truncated,
-                                    "truncate_reason": llm_response.truncate_reason,
-                                    "raw": llm_response.raw,
-                                },
-                                "parsed_output": {
-                                    "thought": model_output.thought,
-                                    "code": model_output.code,
-                                },
-                                "execution": {
-                                    "observation": observation,
-                                    "error": step_meta.error,
-                                    "progress_made": progress_made,
-                                    "items_count": len(state.items),
-                                    "no_progress_streak": no_progress_steps,
-                                },
-                            }
-                        )
-
-                        # 9. 终止判断
-                        if state.done:
+                        no_progress_steps = step_result.no_progress_steps
+                        if step_result.skipped:
+                            continue
+                        if step_result.stop_reason:
                             logger.info(stats_proc.get_summary())
-                            result = await _finish("done", step)
+                            result = await _finish(step_result.stop_reason, step)
                             flush_langfuse()
                             return result
-
-                        # 10. 关键节点反思注入
-                        _inject_reflection_prompts(history, step, state, step_meta, max_steps, no_progress_steps)
-                        
-                        if state.is_over_budget(cfg.max_total_tokens):
-                            logger.warning("Step %d: Token 预算耗尽", step)
-                            logger.info(stats_proc.get_summary())
-                            result = await _finish("token_budget", step)
-                            flush_langfuse()
-                            return result
-                        
-                        if no_progress_steps >= cfg.max_no_progress_steps:
-                            logger.warning("Step %d: 连续 %d 步无进展，终止运行", step, no_progress_steps)
-                            logger.info(stats_proc.get_summary())
-                            result = await _finish("no_progress", step)
-                            flush_langfuse()
-                            return result
-                        
-                        # 接近上限警告（迁移自 main.py 逻辑）
-                        remaining_steps = max_steps - step
-                        if remaining_steps == 1 or (state.token_stats.total_tokens >= cfg.max_total_tokens * 0.9):
-                            history.add_user(
-                                "[System 警告] 即将达到步数/token上限！\n"
-                                "你必须在下一步调用 final_answer() 返回结果：\n"
-                                "- 说明哪些已完成，哪些未完成\n"
-                                "- 即使任务未完成，也请返回已收集的部分数据。"
-                            )
 
                 # 步数上限
                 logger.warning("任务在达到最大步数 (%d) 后终止", max_steps)

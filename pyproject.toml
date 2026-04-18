@@ -1,7 +1,10 @@
 [project]
 name = "hawker-agent"
 version = "0.1.0"
+description = "Autonomous web intelligence agent for browser-first data collection and structured delivery."
+readme = "README.md"
 requires-python = ">=3.11"
+license = {text = "Apache-2.0"}
 dependencies = [
     "browser-use==0.12.2",
     "litellm",

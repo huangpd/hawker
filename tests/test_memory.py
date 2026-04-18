@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from hawker_agent.memory.store import (
     MemoryEntry,
     MemoryMatch,

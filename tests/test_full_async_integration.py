@@ -1,7 +1,4 @@
-import asyncio
 import pytest
-import json
-from pathlib import Path
 from hawker_agent.agent.executor import execute
 from hawker_agent.agent.namespace import HawkerNamespace, build_system_dict
 from hawker_agent.models.state import CodeAgentState
@@ -48,7 +45,7 @@ final_msg = f"Got {len(all_items)} items"
 await final_answer(final_msg)
 """
     
-    output = await execute(code, ns, state=state)
+    await execute(code, ns, state=state)
     
     # 验证数据是否提交成功
     assert len(state.items) == 2

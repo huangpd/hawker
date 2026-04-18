@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import time
 from dataclasses import dataclass
 
 import litellm
@@ -22,9 +21,9 @@ litellm.suppress_debug_info = True
 litellm.add_status_to_exception = False
 os.environ["LITELLM_LOG"] = "ERROR"
 # 针对特定的 LiteLLM logger 进行暴力压制
-for l in ["LiteLLM", "litellm", "litellm.utils", "litellm.main"]:
-    logging.getLogger(l).setLevel(logging.WARNING)
-    logging.getLogger(l).propagate = False
+for logger_name in ["LiteLLM", "litellm", "litellm.utils", "litellm.main"]:
+    logging.getLogger(logger_name).setLevel(logging.WARNING)
+    logging.getLogger(logger_name).propagate = False
 
 logger = logging.getLogger(__name__)
 

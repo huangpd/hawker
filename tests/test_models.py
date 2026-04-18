@@ -23,13 +23,13 @@ from hawker_agent.models.output import CodeAgentModelOutput
 from hawker_agent.models.result import CodeAgentResult
 from hawker_agent.models.state import CodeAgentState, TokenStats
 from hawker_agent.models.step import CodeAgentStepMetadata
-from hawker_agent.agent.runner import (
-    _build_namespace_skip_names,
-    _recover_items_from_final_answer,
-    _replace_state_items,
-    _resolve_final_delivery_items,
-    _validate_final_answer_request,
+from hawker_agent.agent.final_delivery import (
+    recover_items_from_final_answer,
+    replace_state_items,
+    resolve_final_delivery_items,
+    validate_final_answer_request,
 )
+from hawker_agent.agent.runner import _build_namespace_skip_names
 from hawker_agent.agent.evaluator import build_final_evaluation_messages
 from hawker_agent.agent.namespace import HawkerNamespace
 
@@ -203,13 +203,13 @@ class TestCodeAgentState:
 
     def test_recover_items_from_final_answer_list(self) -> None:
         payload = json.dumps([{"id": 1, "title": "A"}, {"id": 2, "title": "B"}], ensure_ascii=False)
-        items = _recover_items_from_final_answer(payload)
+        items = recover_items_from_final_answer(payload)
         assert len(items) == 2
         assert items[0]["id"] == 1
 
     def test_recover_items_from_final_answer_items_wrapper(self) -> None:
         payload = json.dumps({"items": [{"url": "https://a"}, {"url": "https://b"}]}, ensure_ascii=False)
-        items = _recover_items_from_final_answer(payload)
+        items = recover_items_from_final_answer(payload)
         assert len(items) == 2
         assert items[1]["url"] == "https://b"
 
@@ -217,7 +217,7 @@ class TestCodeAgentState:
         state = CodeAgentState()
         state.items.append([{"url": "https://a", "start": "1"}])
         step_meta = CodeAgentStepMetadata(step_no=1, activity_before=0, progress_before=0)
-        reason = _validate_final_answer_request(1, state, step_meta)
+        reason = validate_final_answer_request(1, state, step_meta)
         assert reason is not None
         assert "首步禁止直接完成" in reason
 
@@ -226,7 +226,7 @@ class TestCodeAgentState:
         state.items.append([{"url": "https://a"}, {"url": "https://b"}])
         state.activity_marker = 1
         step_meta = CodeAgentStepMetadata(step_no=2, activity_before=0, progress_before=0)
-        reason = _validate_final_answer_request(2, state, step_meta)
+        reason = validate_final_answer_request(2, state, step_meta)
         assert reason is not None
         assert "首次采集到数据" in reason
 
@@ -240,7 +240,7 @@ class TestCodeAgentState:
         )
         state.activity_marker = 1
         step_meta = CodeAgentStepMetadata(step_no=3, activity_before=1, progress_before=1)
-        reason = _validate_final_answer_request(3, state, step_meta)
+        reason = validate_final_answer_request(3, state, step_meta)
         assert reason is None
 
     def test_resolve_final_delivery_items_prefers_inline_json_items(self) -> None:
@@ -266,14 +266,14 @@ class TestCodeAgentState:
             },
             ensure_ascii=False,
         )
-        items = _resolve_final_delivery_items("返回json，提取 title", final_answer, state)
+        items = resolve_final_delivery_items("返回json，提取 title", final_answer, state)
         assert len(items) == 4
         assert [item["title"] for item in items] == ["A", "B", "C", "D"]
 
     def test_replace_state_items_overwrites_runtime_items(self) -> None:
         state = CodeAgentState()
         state.items.append([{"title": "stale"}, {"title": "old"}])
-        _replace_state_items(state, [{"title": "new-a"}, {"title": "new-b"}])
+        replace_state_items(state, [{"title": "new-a"}, {"title": "new-b"}])
         assert state.items.to_list() == [{"title": "new-a"}, {"title": "new-b"}]
 
     def test_build_namespace_skip_names_uses_system_keys(self) -> None:

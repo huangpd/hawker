@@ -3,7 +3,7 @@ from __future__ import annotations
 import difflib
 import json
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from hawker_agent.agent.parser import parse_response
 from hawker_agent.config import get_settings

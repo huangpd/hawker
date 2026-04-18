@@ -1,17 +1,8 @@
-"""代理数据模型。
+"""代理数据模型的懒加载导出。
 
-包含代理运行期间使用的所有核心数据结构，包括状态管理、历史记录、执行结果、采集项以及追踪模型等。
+避免包初始化阶段一次性导入所有 model，减少环依赖风险。
 """
 from __future__ import annotations
-
-from hawker_agent.models.cell import CellStatus, CodeCell
-from hawker_agent.models.history import CodeAgentHistoryList
-from hawker_agent.models.item import ItemStore
-from hawker_agent.models.output import CodeAgentModelOutput
-from hawker_agent.models.result import CodeAgentResult
-from hawker_agent.models.state import CodeAgentState, TokenStats
-from hawker_agent.models.step import CodeAgentStepMetadata
-from hawker_agent.models.trace import LogContext, Span
 
 __all__ = [
     "CellStatus",
@@ -26,3 +17,39 @@ __all__ = [
     "LogContext",
     "Span",
 ]
+
+
+def __getattr__(name: str):
+    if name in {"CellStatus", "CodeCell"}:
+        from hawker_agent.models.cell import CellStatus, CodeCell
+
+        return {"CellStatus": CellStatus, "CodeCell": CodeCell}[name]
+    if name == "CodeAgentHistoryList":
+        from hawker_agent.models.history import CodeAgentHistoryList
+
+        return CodeAgentHistoryList
+    if name == "ItemStore":
+        from hawker_agent.models.item import ItemStore
+
+        return ItemStore
+    if name == "CodeAgentModelOutput":
+        from hawker_agent.models.output import CodeAgentModelOutput
+
+        return CodeAgentModelOutput
+    if name == "CodeAgentResult":
+        from hawker_agent.models.result import CodeAgentResult
+
+        return CodeAgentResult
+    if name in {"CodeAgentState", "TokenStats"}:
+        from hawker_agent.models.state import CodeAgentState, TokenStats
+
+        return {"CodeAgentState": CodeAgentState, "TokenStats": TokenStats}[name]
+    if name == "CodeAgentStepMetadata":
+        from hawker_agent.models.step import CodeAgentStepMetadata
+
+        return CodeAgentStepMetadata
+    if name in {"LogContext", "Span"}:
+        from hawker_agent.models.trace import LogContext, Span
+
+        return {"LogContext": LogContext, "Span": Span}[name]
+    raise AttributeError(name)

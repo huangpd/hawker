@@ -5,7 +5,7 @@ import uuid
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from hawker_agent.models.item import ItemStore
 from hawker_agent.observability import LogContext, bind_log_context, generate_trace_id
@@ -96,6 +96,7 @@ class CodeAgentState:
     final_answer_requested: str | None = None
     final_artifact_requested: dict[str, Any] | None = None
     final_artifact: dict[str, Any] | None = None
+    expected_output_format: Literal["text", "json", "markdown"] | None = None
 
     # 数据采集
     items: ItemStore = field(default_factory=ItemStore)

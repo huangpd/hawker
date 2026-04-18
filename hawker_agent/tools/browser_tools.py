@@ -177,7 +177,7 @@ def register_browser_tools(
         )
         return _handle_dom_result(result)
 
-    async def nav_search(query: str, engine: str = "google", mode: str = "full") -> str:
+    async def nav_search(query: str, engine: str = "google", mode: str = "auto") -> str:
         """执行搜索并返回摘要字符串；结果页上下文会写入下一轮 DOM Workspace。"""
         effective_mode = _resolve_mode("nav_search", mode)
         result = await actions.nav_search(
@@ -200,6 +200,8 @@ def register_browser_tools(
         network_content_type_contains: str = "",
         network_only_with_body: bool = False,
         network_max_entries: int = 20,
+        network_structured: bool = False,
+        cookie_verbose: bool = True,
         *,
         dom: bool | None = None,
         network: bool | None = None,
@@ -270,7 +272,7 @@ def register_browser_tools(
             }
 
         if "network" in keys:
-            payload["network"] = await actions.get_network_log(
+            network_result = await actions.get_network_log(
                 session,
                 "",
                 only_new_network,
@@ -280,10 +282,16 @@ def register_browser_tools(
                 only_with_body=network_only_with_body,
                 max_entries=network_max_entries,
             )
+            if network_structured:
+                payload["network"] = network_result
+            elif isinstance(network_result, dict):
+                payload["network"] = network_result.get("entries", [])
+            else:
+                payload["network"] = network_result
 
         if "cookies" in keys:
             payload["cookies"] = await actions.get_cookies(
-                session, domain=cookie_domain
+                session, domain=cookie_domain, verbose=cookie_verbose
             )
 
         if selector_index is not None:
@@ -372,14 +380,15 @@ def register_browser_tools(
         content_type_contains: str = "",
         only_with_body: bool = False,
         max_entries: int = 20,
-    ) -> dict[str, Any]:
+        structured: bool = False,
+    ) -> list[dict[str, Any]] | dict[str, Any]:
         """读取页面拦截到的 Fetch/XHR 网络请求日志，支持多维过滤。
 
-        返回形如 ``{"entries": [...], "summary": {...}, "_truncated": bool,
-        "filters": {...}}``。``summary`` 中会包含 ``likely_data_api``
-        （启发式识别到的业务数据接口）和 ``errors``（状态码 >= 400）。
+        默认返回兼容旧接口的 ``list[dict]``。如需 richer 结果，请显式传
+        ``structured=True``，此时返回形如
+        ``{"entries": [...], "summary": {...}, "_truncated": bool, "filters": {...}}``。
         """
-        return await actions.get_network_log(
+        result = await actions.get_network_log(
             session,
             filter,
             only_new,
@@ -389,14 +398,14 @@ def register_browser_tools(
             only_with_body=only_with_body,
             max_entries=max_entries,
         )
+        return result if structured else result.get("entries", [])
 
-    async def get_cookies(domain: str = "", verbose: bool = False) -> list[dict[str, Any]]:
+    async def get_cookies(domain: str = "", verbose: bool = True) -> list[dict[str, Any]]:
         """
         获取当前浏览器会话的 Cookie，可按 ``domain=`` 过滤。
 
-        默认只返回 ``name/value/domain/path`` 4 个关键字段，避免长字段
-        撑爆上下文。需要完整字段（secure/httpOnly/sameSite/expires 等）
-        请显式传 ``verbose=True``。
+        默认返回完整字段，以保持兼容性。若希望降低上下文体积，请显式传
+        ``verbose=False``，仅保留 ``name/value/domain/path``。
 
         Args:
             domain (str, optional): 仅返回同域或子域的 Cookie。例如

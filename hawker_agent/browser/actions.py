@@ -710,7 +710,7 @@ async def get_cookies(
     session: BrowserSession,
     *,
     domain: str = "",
-    verbose: bool = False,
+    verbose: bool = True,
 ) -> list[dict[str, Any]]:
     """提取当前浏览器会话的 Cookie，可按域名过滤。
 

@@ -82,6 +82,8 @@ def _classify_exception(exc: BaseException) -> str:
 
 def _truncate_http_response(text: str, *, limit: int = HTTP_RESPONSE_MAX_CHARS) -> tuple[str, bool]:
     """截断 http_request 响应文本，返回 (body, truncated?)。"""
+    if limit <= 0:
+        return text, False
     if len(text) <= limit:
         return text, False
     sample = text[:limit]
@@ -318,6 +320,7 @@ async def http_request(
     cookies: dict | str | list | None = None,
     *,
     max_chars: int = HTTP_RESPONSE_MAX_CHARS,
+    annotate_hints: bool = True,
     **kwargs: Any,
 ) -> str:
     """
@@ -349,7 +352,10 @@ async def http_request(
         await _validate_url(url)
     except ValueError as e:
         emit_tool_observation("http_request", "URL_BLOCKED", f"url={url}")
-        return f"[错误] {e}\n[hint] 目标地址被安全策略拒绝，请确认 URL 是公网可访问地址。"
+        rendered = f"[错误] {e}"
+        if annotate_hints:
+            rendered += "\n[hint] 目标地址被安全策略拒绝，请确认 URL 是公网可访问地址。"
+        return rendered
 
     try:
         request_data, request_json, request_content = _build_request_payload(
@@ -360,10 +366,10 @@ async def http_request(
         )
     except ValueError as e:
         emit_tool_observation("http_request", "BAD_PAYLOAD")
-        return (
-            f"[错误] {e}\n"
-            "[hint] 请求体只接受一个来源：json=/data=/content=/body= 任选其一。"
-        )
+        rendered = f"[错误] {e}"
+        if annotate_hints:
+            rendered += "\n[hint] 请求体只接受一个来源：json=/data=/content=/body= 任选其一。"
+        return rendered
 
     client = await _get_client()
     try:
@@ -389,7 +395,10 @@ async def http_request(
         logger.exception("HTTP 请求失败: %s %s", method.upper(), url)
         hint = _classify_exception(e) or "建议检查 URL / 网络连通性 / 超时设置后重试。"
         emit_tool_observation("http_request", "EXCEPTION", f"err={type(e).__name__}")
-        return f"[错误] {type(e).__name__}: {e}\n[hint] {hint}"
+        rendered = f"[错误] {type(e).__name__}: {e}"
+        if annotate_hints:
+            rendered += f"\n[hint] {hint}"
+        return rendered
 
     content_type = resp.headers.get("Content-Type", "unknown").split(";")[0]
     body_text, truncated = _truncate_http_response(resp.text, limit=max_chars)
@@ -399,7 +408,7 @@ async def http_request(
         metrics += f",truncated->{max_chars}"
     emit_tool_observation("http_request", status_note, metrics, f"type={content_type}")
     rendered = f"[{resp.status_code}]\n{body_text}"
-    if resp.status_code >= 400:
+    if annotate_hints and resp.status_code >= 400:
         hint = _status_hint_for(resp.status_code)
         if hint:
             rendered += f"\n[hint] {hint}"
@@ -432,6 +441,9 @@ async def http_json(
       并在末尾追加一条 ``{"_truncated": True, "hint": "..."}`` 提示条目，防止大列表
       吃掉上下文；传 ``max_items=0`` 可关闭截断。
     """
+    if pick and json_pointer:
+        raise ValueError("pick= 与 json_pointer= 互斥，请只传其中一个。")
+
     raw = await http_request(
         url,
         method=method,
@@ -441,6 +453,8 @@ async def http_json(
         json=json,
         content=content,
         cookies=cookies,
+        max_chars=0,
+        annotate_hints=False,
         **kwargs,
     )
     status, text = parse_http_response(raw)
@@ -448,23 +462,14 @@ async def http_json(
         200 <= status < 300,
         f"HTTP {status}: {text[:200]}",
     )
-    # http_request 可能为超长响应追加 "\n... [截断...]" 或 "\n[hint] ..."；
-    # 解析前先还原到最接近原始 JSON 的尾部。
-    payload_text = text
-    for marker in ("\n... [截断", "\n[hint] "):
-        idx = payload_text.rfind(marker)
-        if idx > 0:
-            payload_text = payload_text[:idx]
     try:
-        parsed = json_lib.loads(payload_text)
+        parsed = json_lib.loads(text)
     except json_lib.JSONDecodeError as e:
         raise ValueError(
             f"HTTP {status} 响应不是合法 JSON：{e.msg} (position {e.pos})。"
             "建议改用 `http_request(...)` 原文查看或 `fetch(parse='text')`。"
         ) from e
 
-    if pick and json_pointer:
-        raise ValueError("pick= 与 json_pointer= 互斥，请只传其中一个。")
     if pick:
         try:
             parsed = _traverse_pick_path(parsed, pick)

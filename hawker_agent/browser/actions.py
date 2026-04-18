@@ -205,6 +205,10 @@ def _build_dom_action_result(
     )
 
 
+_JS_RAW_MAX_CHARS = 10_000
+_JS_SAMPLE_CHARS = 2_000
+
+
 def _log_js_summary(data: Any) -> None:
     """记录 JavaScript 执行结果的摘要。
 
@@ -234,6 +238,28 @@ def _log_js_summary(data: Any) -> None:
         emit_observation(f"[js] 返回 dict, {len(data)} 个键: {get_type_signature(data)}")
     else:
         emit_observation(f"[js] 返回: {str(data)[:120]}")
+
+
+def _truncate_js_raw(data: Any, max_chars: int = _JS_RAW_MAX_CHARS) -> Any:
+    """若 js() 返回的原始文本过长，则折叠为带提示的结构化摘要。
+
+    针对未能解析成 JSON、直接被吐出的超长字符串进行兜底，避免把整份
+    HTML / JS 源码 / base64 塞进 Observation。
+    """
+    if not isinstance(data, str):
+        return data
+    if len(data) <= max_chars:
+        return data
+    sample = data[:_JS_SAMPLE_CHARS]
+    return {
+        "_truncated": True,
+        "len": len(data),
+        "sample": sample,
+        "hint": (
+            f"js() 返回了 {len(data)} 字符的原始文本，已折叠为前 {len(sample)} 字符样本。"
+            "建议在 JS 内先用 JSON.stringify 结构化提取所需字段，或按页分片返回。"
+        ),
+    }
 
 
 def _build_search_url(query: str, engine: str) -> str | None:
@@ -274,18 +300,40 @@ async def nav(
 
     Returns:
         DomActionResult: 包含导航结果摘要和可选页面上下文的对象。
+            ``summary`` 末尾会附加 URL 变化/重定向事实，例如
+            ``| URL=未变`` 或 ``| URL 已变(redirected): <final>``，方便 Agent
+            立即感知登录墙跳转、SPA 路由等关键事件。
     """
     await ensure_network_monitor(session)
     await session.raw.navigate_to(url)
     await asyncio.sleep(1)
     session.netlog_cursor = 0  # 页面跳转后 __netlog 被清空，重置游标
     full_dom, snapshot = await _capture_dom_state(session)
-    return _build_dom_action_result(
+    result = _build_dom_action_result(
         full_dom=full_dom,
         snapshot=snapshot,
         mode=mode,
         previous_snapshot=previous_snapshot,
     )
+    final_url = snapshot.get("url") or ""
+    changed = bool(final_url) and _urls_differ(url, final_url)
+    if changed:
+        result.summary = f"{result.summary} | URL 已变(redirected): {final_url}"
+    elif final_url:
+        result.summary = f"{result.summary} | URL=未变"
+    if snapshot is not None:
+        snapshot["requested_url"] = url
+        snapshot["redirected"] = changed
+    return result
+
+
+def _urls_differ(requested: str, final: str) -> bool:
+    """判断导航前后 URL 是否发生实质变化（忽略末尾斜杠）。"""
+    if not requested or not final:
+        return False
+    req = requested.split("#", 1)[0].rstrip("/")
+    fin = final.split("#", 1)[0].rstrip("/")
+    return req != fin
 
 
 async def dom_state(
@@ -411,6 +459,11 @@ async def browser_download(
 async def js(session: BrowserSession, code: str) -> Any:
     """在当前页面执行 JavaScript 代码，并返回完整执行结果。
 
+    当返回值是超长字符串（>10KB）时，会自动折叠为
+    ``{"_truncated": True, "len": N, "sample": "...", "hint": "..."}``，
+    避免整份 HTML / 源码 / base64 直接塞进 Observation。如果是列表或 dict
+    则按原值返回（由调用方自行处理更大结构）。
+
     Args:
         session (BrowserSession): 浏览器会话对象。
         code (str): 要执行的 JavaScript 代码。
@@ -419,8 +472,9 @@ async def js(session: BrowserSession, code: str) -> Any:
         Any: JS 执行后的原生 Python 对象（List, Dict, Str, etc.）。
     """
     raw = await run_js(session, code)
-    _log_js_summary(raw)
-    return raw
+    payload = _truncate_js_raw(raw)
+    _log_js_summary(payload if isinstance(payload, (list, dict)) else raw)
+    return payload
 
 
 async def click(
@@ -630,19 +684,52 @@ async def fill_input(session: BrowserSession, index: int, text: str) -> str:
     return f"[OK] 已在 [i_{index}] 输入 '{masked}' ({len(text)}字符)"
 
 
-async def get_cookies(session: BrowserSession) -> list[dict[str, Any]]:
-    """提取当前浏览器会话的所有 Cookie。
+def _cookie_domain_matches(cookie_domain: str, needle: str) -> bool:
+    """以"同源或子域"的方式判断 cookie domain 是否匹配过滤条件。"""
+    if not needle:
+        return True
+    cookie = (cookie_domain or "").lower().lstrip(".")
+    target = needle.lower().lstrip(".")
+    if not cookie:
+        return False
+    return cookie == target or cookie.endswith("." + target)
 
-    采用多级降级策略确保在不同版本的驱动下均能稳定获取。
+
+def _project_cookie(cookie: dict[str, Any], *, verbose: bool) -> dict[str, Any]:
+    """按 verbose 开关裁剪单条 cookie 字段。"""
+    if verbose:
+        return cookie
+    slim: dict[str, Any] = {}
+    for key in ("name", "value", "domain", "path"):
+        if key in cookie:
+            slim[key] = cookie[key]
+    return slim
+
+
+async def get_cookies(
+    session: BrowserSession,
+    *,
+    domain: str = "",
+    verbose: bool = False,
+) -> list[dict[str, Any]]:
+    """提取当前浏览器会话的 Cookie，可按域名过滤。
+
+    采用多级降级策略确保在不同版本的驱动下均能稳定获取。默认只返回
+    ``name/value/domain/path`` 以降低 Token 熵；如需完整字段（secure、
+    httpOnly、sameSite 等）请显式传 ``verbose=True``。
 
     Args:
         session (BrowserSession): 浏览器会话对象。
+        domain (str, optional): 仅返回 ``cookie.domain`` 等于或属于该域子域
+            的条目。例如 ``domain="example.com"`` 会命中 ``.example.com``、
+            ``api.example.com``。默认为 ""（不过滤）。
+        verbose (bool, optional): 是否返回 Cookie 的全部字段。默认为 False。
 
     Returns:
-        list[dict[str, Any]]: 包含所有 Cookie 字典的列表。
+        list[dict[str, Any]]: 筛选后的 Cookie 字典列表。
     """
     # 50年架构师提示：Cookie 是会话的灵魂，必须保证提取的鲁棒性
-    playwright_cookies = []
+    playwright_cookies: list[dict[str, Any]] = []
     try:
         if hasattr(session.raw, "get_cookies"):
             playwright_cookies = await session.raw.get_cookies()
@@ -650,56 +737,299 @@ async def get_cookies(session: BrowserSession) -> list[dict[str, Any]]:
             playwright_cookies = await session.raw._cdp_get_cookies()
         elif hasattr(session.raw, "cookies"):
             cookies_attr = session.raw.cookies
-            playwright_cookies = await cookies_attr() if callable(cookies_attr) else cookies_attr
+            playwright_cookies = (
+                await cookies_attr() if callable(cookies_attr) else cookies_attr
+            )
     except Exception as e:
         logger.error("获取 Cookie 失败: %s", e)
-    
-    emit_observation(f"[get_cookies] 已提取 {len(playwright_cookies)} 条 Cookie")
-    return playwright_cookies
+
+    total = len(playwright_cookies)
+    if domain:
+        playwright_cookies = [
+            c
+            for c in playwright_cookies
+            if isinstance(c, dict) and _cookie_domain_matches(str(c.get("domain") or ""), domain)
+        ]
+    projected = [
+        _project_cookie(c, verbose=verbose) for c in playwright_cookies if isinstance(c, dict)
+    ]
+
+    details = [f"{len(projected)} 条"]
+    if domain:
+        details.append(f"domain~'{domain}' (全部 {total})")
+    if not verbose:
+        details.append("字段=slim(name,value,domain,path)")
+    emit_observation(f"[get_cookies] 已提取 {' | '.join(details)}")
+    return projected
+
+
+# ─── 网络日志筛选辅助 ──────────────────────────────────────────
+
+
+_NETLOG_BODY_MAX = 500
+_NETLOG_DEFAULT_MAX_ENTRIES = 20
+
+
+def _normalize_methods(value: str | list[str] | tuple[str, ...] | None) -> set[str] | None:
+    """将 method 过滤参数规范化为大写字符串集合。"""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        items = [p for p in re.split(r"[,\s]+", value) if p]
+    else:
+        items = [str(p) for p in value if p]
+    if not items:
+        return None
+    return {item.upper() for item in items}
+
+
+def _normalize_status_range(
+    value: tuple[int, int] | list[int] | int | str | None,
+) -> tuple[int, int] | None:
+    """将 status_range 规范化为 (lo, hi) 元组。"""
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return (value, value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        if "-" in stripped:
+            parts = stripped.split("-", 1)
+        elif "," in stripped:
+            parts = stripped.split(",", 1)
+        else:
+            try:
+                code = int(stripped)
+            except ValueError:
+                return None
+            return (code, code)
+        try:
+            lo = int(parts[0].strip())
+            hi = int(parts[1].strip())
+        except ValueError:
+            return None
+        return (min(lo, hi), max(lo, hi))
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        try:
+            lo = int(value[0])
+            hi = int(value[1])
+        except (TypeError, ValueError):
+            return None
+        return (min(lo, hi), max(lo, hi))
+    return None
+
+
+def _entry_content_type(entry: dict[str, Any]) -> str:
+    """提取请求响应的 content-type（大小写不敏感）。"""
+    res_headers = entry.get("resHeaders") or entry.get("responseHeaders") or {}
+    if isinstance(res_headers, dict):
+        for key, val in res_headers.items():
+            if isinstance(key, str) and key.lower() == "content-type":
+                return str(val).lower()
+    body = entry.get("body")
+    if isinstance(body, str) and body.strip().startswith(("{", "[")):
+        return "application/json"
+    return ""
+
+
+def _looks_like_data_api(entry: dict[str, Any]) -> bool:
+    """启发式识别业务数据接口。"""
+    status = entry.get("status")
+    if not isinstance(status, int) or not (200 <= status < 400):
+        return False
+    method = str(entry.get("method") or "").upper()
+    content_type = _entry_content_type(entry)
+    body = entry.get("body") or ""
+    body_len = len(body) if isinstance(body, str) else 0
+    if "application/json" in content_type and body_len >= 200:
+        return True
+    if method in {"POST", "PUT", "PATCH"} and body_len >= 200:
+        return True
+    return False
+
+
+def _summarize_netlog_entries(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """为网络日志结果生成高密度摘要。"""
+    by_type: dict[str, int] = {}
+    errors: list[dict[str, Any]] = []
+    likely_apis: list[dict[str, Any]] = []
+    for entry in entries:
+        t = str(entry.get("type") or "other")
+        by_type[t] = by_type.get(t, 0) + 1
+        status = entry.get("status")
+        if isinstance(status, int) and (status >= 400 or status == 0):
+            errors.append(
+                {
+                    "url": entry.get("url", ""),
+                    "method": str(entry.get("method") or "GET").upper(),
+                    "status": status,
+                }
+            )
+        if _looks_like_data_api(entry):
+            body_len = len(entry.get("body") or "") if isinstance(entry.get("body"), str) else 0
+            likely_apis.append(
+                {
+                    "url": entry.get("url", ""),
+                    "method": str(entry.get("method") or "GET").upper(),
+                    "status": status,
+                    "size": body_len,
+                    "content_type": _entry_content_type(entry) or "unknown",
+                }
+            )
+    return {
+        "total": len(entries),
+        "by_type": by_type,
+        "likely_data_api": likely_apis[:5],
+        "errors": errors[:5],
+    }
+
+
+def _truncate_netlog_body(value: Any, limit: int = _NETLOG_BODY_MAX) -> Any:
+    """截断网络日志中的长响应体/请求体字段。"""
+    if isinstance(value, str) and len(value) > limit:
+        return value[:limit] + f"... [截断，共{len(value)}字符]"
+    return value
+
+
+def _trim_netlog_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """裁剪单条网络日志，避免长 body 直接进 Prompt。"""
+    trimmed = dict(entry)
+    for key in ("body", "reqBody", "requestBody"):
+        if key in trimmed:
+            trimmed[key] = _truncate_netlog_body(trimmed[key])
+    return trimmed
 
 
 async def get_network_log(
     session: BrowserSession,
     filter_str: str = "",
     only_new: bool = False,
-) -> list[dict[str, Any]]:
-    """读取页面拦截到的 Fetch/XHR 网络请求日志。
+    *,
+    method: str | list[str] | tuple[str, ...] | None = None,
+    status_range: tuple[int, int] | list[int] | int | str | None = None,
+    content_type_contains: str = "",
+    only_with_body: bool = False,
+    max_entries: int = _NETLOG_DEFAULT_MAX_ENTRIES,
+) -> dict[str, Any]:
+    """读取页面拦截到的 Fetch/XHR 网络请求日志，支持多维过滤。
 
     Args:
         session (BrowserSession): 浏览器会话对象。
-        filter_str (str, optional): 用于过滤 URL 的字符串。默认为 ""。
-        only_new (bool, optional): 是否仅返回自上次读取以来的新请求。默认为 False。
+        filter_str (str, optional): URL 子串过滤。默认为 ""。
+        only_new (bool, optional): 仅返回自上次读取以来的新请求。默认为 False。
+        method (str | list[str] | None, optional): 按 HTTP 方法过滤，如 "POST"
+            或 ["GET", "POST"]。默认为 None。
+        status_range (tuple[int, int] | int | str | None, optional): 按状态码过滤。
+            支持 (200, 299) / 200 / "200-299" / "200,299"。默认为 None。
+        content_type_contains (str, optional): 按响应 Content-Type 子串过滤。默认为 ""。
+        only_with_body (bool, optional): 仅保留带响应体的请求。默认为 False。
+        max_entries (int, optional): 最多返回的条数。超出部分以 ``_truncated``
+            字段汇报。默认为 ``_NETLOG_DEFAULT_MAX_ENTRIES`` (20)。
 
     Returns:
-        list[dict[str, Any]]: 包含网络请求日志项的列表。
+        dict[str, Any]: 形如
+            ``{"entries": [...], "summary": {"total": N, "by_type": ...,
+            "likely_data_api": [...], "errors": [...]},
+            "_truncated": bool, "filters": {...}}``。
     """
-    if filter_str:
-        safe_filter = _escape_js_string(filter_str)
-        js_code = f"""(function(){{
-var log=window.__netlog||[];
-var f='{safe_filter}'.toLowerCase();
-var r=log.filter(function(e){{return e.url.toLowerCase().indexOf(f)!==-1;}});
-return JSON.stringify(r);
-}})()"""
-    else:
-        js_code = "(function(){return JSON.stringify(window.__netlog||[]);})()"
+    js_code = "(function(){return JSON.stringify(window.__netlog||[]);})()"
     raw = await run_js(session, js_code)
     try:
         all_entries = json.loads(raw)
-        if only_new:
-            entries = all_entries[session.netlog_cursor :]
-        else:
-            entries = all_entries
-        session.netlog_cursor = len(all_entries)
-        label = "[network_log]"
-        if only_new:
-            label += "(new)"
-        
-        # 使用专业的 emit_observation 汇报给 LLM
-        emit_observation(
-            f"{label} {len(entries)} 条请求"
-            + (f" (filter='{filter_str}')" if filter_str else "")
-        )
-        return entries
     except Exception:
-        return []
+        return {
+            "entries": [],
+            "summary": {"total": 0, "by_type": {}, "likely_data_api": [], "errors": []},
+            "_truncated": False,
+            "filters": {},
+        }
+
+    if not isinstance(all_entries, list):
+        all_entries = []
+
+    if only_new:
+        window = all_entries[session.netlog_cursor :]
+    else:
+        window = all_entries
+    session.netlog_cursor = len(all_entries)
+
+    filters_active: dict[str, Any] = {}
+    filtered: list[dict[str, Any]] = []
+    needle = (filter_str or "").lower()
+    method_set = _normalize_methods(method)
+    status_tuple = _normalize_status_range(status_range)
+    ct_needle = (content_type_contains or "").lower()
+
+    if filter_str:
+        filters_active["url_contains"] = filter_str
+    if method_set:
+        filters_active["method"] = sorted(method_set)
+    if status_tuple:
+        filters_active["status_range"] = list(status_tuple)
+    if ct_needle:
+        filters_active["content_type_contains"] = content_type_contains
+    if only_with_body:
+        filters_active["only_with_body"] = True
+    if only_new:
+        filters_active["only_new"] = True
+
+    for entry in window:
+        if not isinstance(entry, dict):
+            continue
+        url = str(entry.get("url") or "")
+        if needle and needle not in url.lower():
+            continue
+        entry_method = str(entry.get("method") or "GET").upper()
+        if method_set and entry_method not in method_set:
+            continue
+        entry_status = entry.get("status")
+        if status_tuple is not None:
+            if not isinstance(entry_status, int):
+                continue
+            if not (status_tuple[0] <= entry_status <= status_tuple[1]):
+                continue
+        if ct_needle and ct_needle not in _entry_content_type(entry):
+            continue
+        if only_with_body:
+            body = entry.get("body") or ""
+            if not isinstance(body, str) or not body:
+                continue
+        filtered.append(entry)
+
+    total_filtered = len(filtered)
+    truncated = total_filtered > max_entries
+    kept = filtered[:max_entries] if max_entries > 0 else []
+    kept_trimmed = [_trim_netlog_entry(e) for e in kept]
+    summary = _summarize_netlog_entries(filtered)
+    if truncated:
+        summary["truncated"] = True
+        summary["dropped"] = total_filtered - max_entries
+
+    label = "[network_log]"
+    if only_new:
+        label += "(new)"
+    details = [f"{total_filtered} 条"]
+    if filter_str:
+        details.append(f"filter='{filter_str}'")
+    if method_set:
+        details.append("method=" + ",".join(sorted(method_set)))
+    if status_tuple:
+        details.append(f"status={status_tuple[0]}-{status_tuple[1]}")
+    if ct_needle:
+        details.append(f"content_type~'{content_type_contains}'")
+    if summary["likely_data_api"]:
+        details.append(f"likely_api={len(summary['likely_data_api'])}")
+    if summary["errors"]:
+        details.append(f"errors={len(summary['errors'])}")
+    if truncated:
+        details.append(f"显示前 {max_entries}")
+    emit_observation(f"{label} {' | '.join(details)}")
+
+    return {
+        "entries": kept_trimmed,
+        "summary": summary,
+        "_truncated": truncated,
+        "filters": filters_active,
+    }

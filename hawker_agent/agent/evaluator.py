@@ -100,7 +100,7 @@ def build_final_evaluation_messages(
                 "不要改代码，不要规划下一步。"
                 "只输出 JSON：{\"accept\": true|false, \"reason\": \"...\", \"missing_requirements\": [\"...\"]}。"
                 "优先依据任务要求验收产出物，而不是依据模型自述。"
-                "若 delivery_mode=summary_with_structured_items，则 final_answer 默认只需摘要，正式结构化数据由系统 items/result.json 承载。"
+                "若 delivery_mode=summary_with_structured_items，则 final_answer 默认只需摘要，结构化数据由系统记录的 items/artifact 承载。"
                 "若 delivery_mode=inline_json，则 final_answer 必须满足任务对内联 JSON 的要求。"
                 "这里提供的“样本”仅是 items 的抽样预览，不代表全量条数，不能因为样本条数少于 items_count 就拒绝。"
                 "只有在样本明显与任务字段不符、items 为空、final_answer 与已采集数据明显矛盾，或交付证据严重不足时才拒绝。"
@@ -181,7 +181,6 @@ async def evaluate_final_delivery(
             messages,
             model_name=cfg.small_model_name,
             reasoning_effort=cfg.final_evaluator_reasoning_effort,
-            temperature=0.0,
             trace_name="final_evaluator_generation",
         )
     except Exception as exc:

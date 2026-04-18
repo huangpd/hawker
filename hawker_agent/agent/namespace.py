@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from hawker_agent.observability import emit_observation
+from hawker_agent.agent.artifact import artifact_to_answer_text, normalize_final_artifact
 from hawker_agent.tools.data_tools import (
     clean_items,
     ensure,
@@ -248,7 +249,7 @@ def register_core_actions(
     registry.register(fn_append, name="append_items", category="数据保存")
     
     fn_checkpoint = _make_save_checkpoint(state, run_dir)
-    fn_checkpoint.__doc__ = "将当前 all_items 进度保存到磁盘（防止任务意外中断丢失数据）。不要使用 result.json 作为文件名；正式结果会由系统自动写入 result.json。"
+    fn_checkpoint.__doc__ = "将当前 all_items 进度保存到磁盘（防止任务意外中断丢失数据）。不要使用 result.json 作为文件名；该文件名保留给最终结果。"
     registry.register(fn_checkpoint, name="save_checkpoint", category="数据保存")
 
     fn_observe = _make_observe()
@@ -420,6 +421,9 @@ def _make_final_answer(state: CodeAgentState) -> Callable:
         Callable: final_answer 函数。
     """
     async def final_answer(answer: object) -> None:
-        state.final_answer_requested = str(answer)
-        emit_observation(f"[final_answer] {answer}")
+        artifact = normalize_final_artifact(answer)
+        answer_text = artifact_to_answer_text(artifact)
+        state.final_artifact_requested = artifact
+        state.final_answer_requested = answer_text
+        emit_observation(f"[final_answer] {answer_text}")
     return final_answer

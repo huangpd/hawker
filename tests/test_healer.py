@@ -61,3 +61,45 @@ class TestHealer:
 
         assert healed is not None
         assert state.healing_records[-1]["status"] == "accepted"
+
+    @pytest.mark.asyncio
+    async def test_healing_does_not_force_temperature(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from hawker_agent.agent import healer as healer_mod
+        from hawker_agent.agent.namespace import HawkerNamespace
+
+        captured_kwargs: dict = {}
+
+        class FakeResponse:
+            text = "```python\nitems = []\nobserve(str(len(items)))\n```"
+            input_tokens = 1
+            output_tokens = 1
+            cached_tokens = 0
+            total_tokens = 2
+            cost = 0.0
+
+        class FakeClient:
+            def __init__(self, cfg): ...
+
+            async def complete_with_model(self, *args, **kwargs):
+                captured_kwargs.update(kwargs)
+                return FakeResponse()
+
+        class FakeSettings:
+            healer_enabled = True
+            small_model_name = "mini"
+            healer_reasoning_effort = ""
+            healer_max_attempts = 1
+
+        monkeypatch.setattr(healer_mod, "get_settings", lambda: FakeSettings())
+        monkeypatch.setattr(healer_mod, "LLMClient", FakeClient)
+
+        state = CodeAgentState()
+        namespace = HawkerNamespace({}, "/tmp/run")
+        await healer_mod.try_heal_code(
+            code="items = []\nobserve(str(len(itemz)))",
+            error="[执行错误]\nNameError: name 'itemz' is not defined",
+            namespace=namespace,
+            state=state,
+        )
+
+        assert "temperature" not in captured_kwargs

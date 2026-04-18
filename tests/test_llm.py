@@ -271,6 +271,135 @@ class TestLLMClient:
         assert not result.is_truncated
 
     @pytest.mark.asyncio
+    async def test_complete_does_not_send_default_temperature(self) -> None:
+        from hawker_agent.llm.client import LLMClient
+
+        cfg = self._make_settings()
+        client = LLMClient(cfg=cfg)
+
+        mock_response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
+        mock_response.usage.model_dump = lambda: {
+            "prompt_tokens": 1,
+            "completion_tokens": 1,
+            "total_tokens": 2,
+        }
+
+        captured_kwargs: dict = {}
+
+        async def fake_completion(**kwargs):
+            captured_kwargs.update(kwargs)
+            return mock_response
+
+        with (
+            patch("hawker_agent.llm.client._litellm_completion", side_effect=fake_completion),
+            patch("hawker_agent.llm.client.calculate_cost", return_value=0.0),
+        ):
+            await client.complete([{"role": "user", "content": "test"}])
+
+        assert "temperature" not in captured_kwargs
+        assert captured_kwargs["drop_params"] is True
+
+    @pytest.mark.asyncio
+    async def test_complete_with_model_preserves_explicit_temperature(self) -> None:
+        from hawker_agent.llm.client import LLMClient
+
+        cfg = self._make_settings()
+        client = LLMClient(cfg=cfg)
+
+        mock_response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
+        mock_response.usage.model_dump = lambda: {
+            "prompt_tokens": 1,
+            "completion_tokens": 1,
+            "total_tokens": 2,
+        }
+
+        captured_kwargs: dict = {}
+
+        async def fake_completion(**kwargs):
+            captured_kwargs.update(kwargs)
+            return mock_response
+
+        with (
+            patch("hawker_agent.llm.client._litellm_completion", side_effect=fake_completion),
+            patch("hawker_agent.llm.client.calculate_cost", return_value=0.0),
+        ):
+            await client.complete_with_model(
+                [{"role": "user", "content": "test"}],
+                model_name="gpt-4",
+                temperature=0.0,
+            )
+
+        assert captured_kwargs["temperature"] == 0.0
+        assert captured_kwargs["drop_params"] is True
+
+    @pytest.mark.asyncio
+    async def test_complete_falls_back_to_responses_api_when_messages_unsupported(self) -> None:
+        from hawker_agent.llm.client import LLMClient
+
+        cfg = self._make_settings()
+        cfg.model_name = "gpt-5.4"
+        client = LLMClient(cfg=cfg)
+
+        responses_output_text = SimpleNamespace(text="fallback ok")
+        responses_content = SimpleNamespace(type="output_text", text="fallback ok")
+        responses_message = SimpleNamespace(type="message", content=[responses_content])
+        mock_response = SimpleNamespace(
+            output=[responses_message],
+            usage=SimpleNamespace(input_tokens=11, output_tokens=7, total_tokens=18),
+        )
+        mock_response.usage.model_dump = lambda: {
+            "input_tokens": 11,
+            "output_tokens": 7,
+            "total_tokens": 18,
+        }
+        mock_response.output_text = "fallback ok"
+
+        responses_kwargs: dict = {}
+
+        async def fake_completion(**kwargs):
+            raise Exception(
+                "Unsupported parameter: 'messages'. In the Responses API, this parameter has moved to 'input'."
+            )
+
+        async def fake_responses(**kwargs):
+            responses_kwargs.update(kwargs)
+            return mock_response
+
+        with (
+            patch("hawker_agent.llm.client._litellm_completion", side_effect=fake_completion),
+            patch("hawker_agent.llm.client._litellm_responses", side_effect=fake_responses),
+            patch("hawker_agent.llm.client.calculate_cost", return_value=0.0),
+        ):
+            result = await client.complete([{"role": "user", "content": "test"}])
+
+        assert result.text == "fallback ok"
+        assert result.input_tokens == 11
+        assert result.output_tokens == 7
+        assert responses_kwargs["input"] == [{"role": "user", "content": "test"}]
+        assert responses_kwargs["drop_params"] is True
+
+    def test_content_policy_error_does_not_trigger_responses_fallback(self) -> None:
+        from hawker_agent.llm.client import _should_retry_with_responses
+
+        assert not _should_retry_with_responses(Exception("ContentPolicyViolationError: blocked"))
+
+    @pytest.mark.asyncio
+    async def test_complete_extracts_text_from_responses_output(self) -> None:
+        from hawker_agent.llm.client import _extract_text
+
+        responses_content = SimpleNamespace(type="output_text", text="hello from responses")
+        responses_message = SimpleNamespace(type="message", content=[responses_content])
+        mock_response = SimpleNamespace(output=[responses_message])
+
+        assert _extract_text(mock_response) == "hello from responses"
+
+    @pytest.mark.asyncio
     async def test_complete_raises_llm_error(self) -> None:
         from hawker_agent.llm.client import LLMClient
 

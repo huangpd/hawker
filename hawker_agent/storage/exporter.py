@@ -152,6 +152,7 @@ def save_result_json(
     run_dir: Path,
     items: list[dict],
     answer: str,
+    final_artifact: dict[str, Any] | None = None,
     checkpoint_files: set[str] | None = None,
 ) -> Path:
     """保存最终结果为 JSON 文件，并清理中间检查点。
@@ -175,6 +176,7 @@ def save_result_json(
 
     data = {
         "result": summary,
+        "artifact": _to_jsonable(final_artifact) if final_artifact is not None else None,
         "items": items,
         "items_count": len(items),
     }

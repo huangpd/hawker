@@ -125,7 +125,6 @@ async def try_heal_code(
                 messages,
                 model_name=cfg.small_model_name,
                 reasoning_effort=cfg.healer_reasoning_effort,
-                temperature=0.0,
                 trace_name="healing_generation",
             )
         except Exception as exc:

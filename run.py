@@ -25,10 +25,6 @@ TASK="""
 """
 
 
-TASK="""
-步骤1: 获取 https://huggingface.co/datasets/nvidia/Nemotron-ClimbMix 仓库信息
-步骤5：提取这个仓库所有的文件名和下载URL
-"""
 
 
 TASK="""
@@ -125,6 +121,19 @@ Haoyi Hu, Jianghao Lin, Gaowei Chang, Weiwen Liu, Ying Wen, Yong Yu, and Weinan 
 A survey of AI agent protocols, 2025. URL https://arxiv.org/abs/2504.16736.
 '''
 """
+
+TASK="""
+去 https://x.com/gregpr07(最好从google跳转，不然容易风控)  查看这个人最新10条动态，用中文总结一下，让我知道他最近的在干什么，有什么新的洞察
+"""
+TASK="""
+去 https://x.com/OpenAI，https://x.com/sama，https://x.com/claudeai，https://x.com/bcherny  查看这些账号最新10条动态，用中文总结一下，有AI有什么新的洞察
+"""
+
+TASK="""
+步骤1: 获取 https://huggingface.co/datasets/nvidia/Nemotron-ClimbMix 仓库信息
+步骤5：提取这个仓库所有的文件名和下载URL
+"""
+
 # =================================================================
 
 async def main():

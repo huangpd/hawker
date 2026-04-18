@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 import litellm
 from litellm import acompletion as _litellm_completion
+from litellm import aresponses as _litellm_responses
 
 from hawker_agent.config import Settings, get_settings
 from hawker_agent.exceptions import LLMError
@@ -148,6 +149,46 @@ def _detect_truncation(response_obj: object) -> tuple[bool, str | None]:
     return False, None
 
 
+def _extract_text(response_obj: object) -> str:
+    """兼容 Chat Completions 与 Responses API 两种返回结构，提取文本内容。"""
+    choices = getattr(response_obj, "choices", None)
+    if choices:
+        message = getattr(choices[0], "message", None)
+        content = getattr(message, "content", None) if message else None
+        if isinstance(content, str):
+            return content
+
+    output_text = getattr(response_obj, "output_text", None)
+    if isinstance(output_text, str) and output_text:
+        return output_text
+
+    output = getattr(response_obj, "output", None)
+    if isinstance(output, list):
+        parts: list[str] = []
+        for item in output:
+            if getattr(item, "type", None) != "message":
+                continue
+            for content in getattr(item, "content", []) or []:
+                text = getattr(content, "text", None)
+                if isinstance(text, str) and text:
+                    parts.append(text)
+        if parts:
+            return "\n".join(parts)
+
+    return ""
+
+
+def _should_retry_with_responses(exc: Exception) -> bool:
+    """判断当前错误是否表明应改走 Responses API。"""
+    exc_str = str(exc).lower()
+    indicators = (
+        "unsupported parameter: 'messages'",
+        "parameter has moved to 'input'",
+        "responses api",
+    )
+    return any(indicator in exc_str for indicator in indicators)
+
+
 class LLMClient:
     """通用 OpenAI 兼容的 LLM 调用封装类。
 
@@ -193,35 +234,62 @@ class LLMClient:
         with trace(trace_name, model=model, as_type="generation", input={"messages": messages}) as span:
             step_context = bind_log_context(step=current_step) if current_step != "-" else bind_log_context()
             with step_context:
-                # LiteLLM 警告: Gemini 3 系列模型 (如 gemini-3-flash-preview) 必须使用 temperature=1.0
-                effective_temperature = temperature if temperature is not None else (1.0 if "gemini" in model.lower() else 0.7)
-
-                kwargs: dict = {
+                chat_kwargs: dict = {
                     "model": model,
                     "messages": messages,
                     "api_key": self._cfg.openai_api_key,
                     "base_url": api_base,
                     "timeout": 180,
-                    "temperature": effective_temperature,
+                    # 让 LiteLLM 按模型能力自动丢弃不支持的 OpenAI 参数，减少跨模型适配分支。
+                    "drop_params": True,
                     "max_tokens": 2500,  # 提高上限，降低 finish_reason=length 频率
                 }
+                if temperature is not None:
+                    chat_kwargs["temperature"] = temperature
                 
                 effective_reasoning_effort = self._cfg.reasoning_effort if reasoning_effort is None else reasoning_effort
                 if effective_reasoning_effort:
-                    kwargs["reasoning_effort"] = effective_reasoning_effort
+                    chat_kwargs["reasoning_effort"] = effective_reasoning_effort
+
+                responses_kwargs: dict = {
+                    "model": model,
+                    "input": messages,
+                    "api_key": self._cfg.openai_api_key,
+                    "base_url": api_base,
+                    "timeout": 180,
+                    "drop_params": True,
+                    "max_output_tokens": 2500,
+                }
+                if temperature is not None:
+                    responses_kwargs["temperature"] = temperature
+                if effective_reasoning_effort:
+                    responses_kwargs["reasoning_effort"] = effective_reasoning_effort
 
                 max_retries = 3
                 retry_delay = 5
 
                 response = None
+                use_responses_api = False
                 for attempt in range(max_retries):
                     try:
                         # 记录核心动作到 DEBUG
-                        logger.debug("LLM 请求开始: model=%s attempt=%d", model, attempt + 1)
-                        response = await _litellm_completion(**kwargs)
+                        logger.debug(
+                            "LLM 请求开始: model=%s attempt=%d mode=%s",
+                            model,
+                            attempt + 1,
+                            "responses" if use_responses_api else "chat",
+                        )
+                        if use_responses_api:
+                            response = await _litellm_responses(**responses_kwargs)
+                        else:
+                            response = await _litellm_completion(**chat_kwargs)
                         break
                     except Exception as exc:
                         exc_str = str(exc)
+                        if not use_responses_api and _should_retry_with_responses(exc):
+                            logger.warning("LLM 请求提示当前模型需要 Responses API，自动切换重试: model=%s", model)
+                            use_responses_api = True
+                            continue
                         if "429" in exc_str or "RESOURCE_EXHAUSTED" in exc_str:
                             if attempt < max_retries - 1:
                                 logger.warning("遇到限额，%ds 后重试...", retry_delay)
@@ -233,7 +301,7 @@ class LLMClient:
                     raise LLMError("LLM 请求重试次数耗尽")
 
                 # 提取数据
-                text = response.choices[0].message.content or ""
+                text = _extract_text(response)
                 usage_dict = _usage_to_dict(getattr(response, "usage", None))
                 input_t, output_t, cached_t, total_t = _extract_usage(usage_dict)
                 cost = calculate_cost(

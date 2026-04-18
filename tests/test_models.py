@@ -30,6 +30,7 @@ from hawker_agent.agent.runner import (
     _resolve_final_delivery_items,
     _validate_final_answer_request,
 )
+from hawker_agent.agent.evaluator import build_final_evaluation_messages
 from hawker_agent.agent.namespace import HawkerNamespace
 
 
@@ -443,6 +444,7 @@ class TestCodeAgentResult:
     def test_defaults(self) -> None:
         result = CodeAgentResult(answer="", success=False)
         assert result.stop_reason == "done"
+        assert result.artifact is None
         assert result.run_dir is None
         assert result.log_path is None
         assert result.notebook_path is None
@@ -453,6 +455,18 @@ class TestCodeAgentResult:
     def test_success_flag(self) -> None:
         assert CodeAgentResult(answer="ok", success=True).success is True
         assert CodeAgentResult(answer="fail", success=False).success is False
+
+
+def test_final_evaluation_prompt_does_not_reference_result_json() -> None:
+    messages = build_final_evaluation_messages(
+        task="抓取最近 3 条动态并总结",
+        final_answer="已完成",
+        items=[{"url": "https://example.com"}],
+        recent_observations=[],
+    )
+
+    assert "items/artifact" in messages[0]["content"]
+    assert "result.json" not in messages[0]["content"]
 
 
 # ─── CodeAgentHistoryList ──────────────────────────────────────

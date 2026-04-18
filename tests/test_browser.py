@@ -3,7 +3,8 @@ from __future__ import annotations
 import inspect
 import json
 import logging
-from unittest.mock import MagicMock, patch
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -13,6 +14,7 @@ from hawker_agent.browser.actions import (
     _log_js_summary,
 )
 from hawker_agent.browser.netlog import NETLOG_INJECT_JS
+from hawker_agent.observability import collect_observations
 from hawker_agent.tools.browser_tools import register_browser_tools
 from hawker_agent.tools.registry import ToolRegistry
 
@@ -90,6 +92,84 @@ class TestBrowserSession:
             session = BrowserSession(headless=True)
             assert session._headless is True
 
+    def test_browser_profile_options_from_settings(self) -> None:
+        with patch("hawker_agent.browser.session.get_settings") as mock_settings:
+            mock_settings.return_value = MagicMock(
+                headless=False,
+                browser_executable_path=Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                browser_user_data_dir=Path("/Users/test/Library/Application Support/Google/Chrome"),
+                browser_profile_directory="Profile 1",
+                browser_storage_state=Path("/tmp/browser-state.json"),
+                browser_channel="chrome",
+                browser_cdp_url="http://127.0.0.1:9222",
+            )
+            from hawker_agent.browser.session import BrowserSession
+
+            session = BrowserSession()
+            assert session._browser_profile_kwargs == {
+                "headless": False,
+                "executable_path": Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                "user_data_dir": Path("/Users/test/Library/Application Support/Google/Chrome"),
+                "profile_directory": "Profile 1",
+                "storage_state": Path("/tmp/browser-state.json"),
+                "channel": "chrome",
+                "cdp_url": "http://127.0.0.1:9222",
+            }
+
+    def test_empty_optional_browser_paths_are_none(self) -> None:
+        from hawker_agent.config import Settings
+
+        cfg = Settings(
+            openai_api_key="test",
+            model_name="test-model",
+            browser_executable_path="",
+            browser_user_data_dir="",
+            browser_storage_state="",
+        )
+
+        assert cfg.browser_executable_path is None
+        assert cfg.browser_user_data_dir is None
+        assert cfg.browser_storage_state is None
+
+    @pytest.mark.asyncio
+    async def test_aenter_passes_browser_profile_options(self) -> None:
+        with patch("hawker_agent.browser.session.get_settings") as mock_settings, \
+             patch("hawker_agent.browser.session.BrowserProfile") as mock_profile_cls, \
+             patch("hawker_agent.browser.session._UpstreamBrowserSession") as mock_session_cls, \
+             patch("hawker_agent.browser.session.tempfile.mkdtemp", return_value="/tmp/hawker_browser_test"):
+            mock_settings.return_value = MagicMock(
+                headless=False,
+                browser_executable_path=Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                browser_user_data_dir=Path("/Users/test/Library/Application Support/Google/Chrome"),
+                browser_profile_directory="Profile 1",
+                browser_storage_state=Path("/tmp/browser-state.json"),
+                browser_channel="chrome",
+                browser_cdp_url="http://127.0.0.1:9222",
+            )
+            mock_profile = MagicMock()
+            mock_profile_cls.return_value = mock_profile
+            mock_upstream = MagicMock()
+            mock_upstream.start = AsyncMock()
+            mock_upstream.stop = AsyncMock()
+            mock_session_cls.return_value = mock_upstream
+
+            from hawker_agent.browser.session import BrowserSession
+
+            session = BrowserSession()
+            await session.__aenter__()
+
+            mock_profile_cls.assert_called_once_with(
+                headless=False,
+                executable_path=Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                user_data_dir=Path("/Users/test/Library/Application Support/Google/Chrome"),
+                profile_directory="Profile 1",
+                storage_state=Path("/tmp/browser-state.json"),
+                channel="chrome",
+                cdp_url="http://127.0.0.1:9222",
+            )
+            mock_session_cls.assert_called_once_with(browser_profile=mock_profile)
+            mock_upstream.start.assert_awaited_once()
+
 
 # ─── DomActionResult ──────────────────────────────────────────
 
@@ -148,38 +228,39 @@ class TestBuildSearchUrl:
 
 
 class TestLogJsSummary:
-    def test_error_result(self, caplog: pytest.LogCaptureFixture) -> None:
-        with caplog.at_level(logging.INFO, logger="hawker_agent.browser.actions"):
+    def test_error_result(self) -> None:
+        with collect_observations() as observations:
             _log_js_summary("[JS错误] some error")
-        assert "[JS错误]" in caplog.text
+        assert "[JS错误]" in "\n".join(observations)
 
-    def test_list_result(self, caplog: pytest.LogCaptureFixture) -> None:
-        data = json.dumps([{"id": 1}, {"id": 2}])
-        with caplog.at_level(logging.INFO, logger="hawker_agent.browser.actions"):
+    def test_list_result(self) -> None:
+        data = [{"id": 1}, {"id": 2}]
+        with collect_observations() as observations:
             _log_js_summary(data)
-        assert "2 条数据" in caplog.text
+        assert "2 条数据" in "\n".join(observations)
 
-    def test_dict_result(self, caplog: pytest.LogCaptureFixture) -> None:
-        data = json.dumps({"key": "value", "count": 42})
-        with caplog.at_level(logging.INFO, logger="hawker_agent.browser.actions"):
+    def test_dict_result(self) -> None:
+        data = {"key": "value", "count": 42}
+        with collect_observations() as observations:
             _log_js_summary(data)
-        assert "dict" in caplog.text
-        assert "2 个键" in caplog.text
+        text = "\n".join(observations)
+        assert "dict" in text
+        assert "2 个键" in text
 
-    def test_scalar_result(self, caplog: pytest.LogCaptureFixture) -> None:
-        with caplog.at_level(logging.INFO, logger="hawker_agent.browser.actions"):
+    def test_scalar_result(self) -> None:
+        with collect_observations() as observations:
             _log_js_summary('"hello"')
-        assert "hello" in caplog.text
+        assert "hello" in "\n".join(observations)
 
-    def test_plain_text_result(self, caplog: pytest.LogCaptureFixture) -> None:
-        with caplog.at_level(logging.INFO, logger="hawker_agent.browser.actions"):
+    def test_plain_text_result(self) -> None:
+        with collect_observations() as observations:
             _log_js_summary("not json at all")
-        assert "15 字符" in caplog.text
+        assert "not json at all" in "\n".join(observations)
 
-    def test_empty_list(self, caplog: pytest.LogCaptureFixture) -> None:
-        with caplog.at_level(logging.INFO, logger="hawker_agent.browser.actions"):
-            _log_js_summary("[]")
-        assert "0 条数据" in caplog.text
+    def test_empty_list(self) -> None:
+        with collect_observations() as observations:
+            _log_js_summary([])
+        assert "0 条数据" in "\n".join(observations)
 
 
 # ─── register_browser_tools ──────────────────────────────────
@@ -191,11 +272,14 @@ class TestBrowserToolsRegistration:
         mock_session = MagicMock()
         mock_history = MagicMock()
         register_browser_tools(registry, mock_session, mock_history)
-        expected = {"nav", "dom_state", "nav_search", "js", "click",
-                    "click_index", "fill_input", "get_network_log"}
+        expected = {
+            "nav", "dom_state", "nav_search", "inspect_page", "js", "click",
+            "click_index", "fill_input", "browser_download", "get_network_log",
+            "get_selector_from_index", "get_cookies",
+        }
         for name in expected:
             assert name in registry, f"工具 {name} 未注册"
-        assert len(registry) == 8
+        assert len(registry) == 12
 
     def test_tool_descriptions_in_chinese(self) -> None:
         registry = ToolRegistry()
@@ -210,7 +294,7 @@ class TestBrowserToolsRegistration:
         assert "JavaScript" in desc
         assert "点击" in desc
         assert "输入" in desc
-        assert "网络请求" in desc
+        assert "侦察" in desc
 
     def test_nav_signature_no_session(self) -> None:
         registry = ToolRegistry()
@@ -231,7 +315,7 @@ class TestBrowserToolsRegistration:
         ns = registry.as_namespace_dict()
         sig = inspect.signature(ns["click"])
         param_names = list(sig.parameters.keys())
-        assert param_names == ["selector", "index"]
+        assert param_names == ["selector", "index", "mode"]
 
     def test_fill_input_signature(self) -> None:
         registry = ToolRegistry()
@@ -262,4 +346,4 @@ class TestBrowserToolsRegistration:
         register_browser_tools(registry, mock_session, mock_history)
         ns = registry.as_namespace_dict()
         sig = inspect.signature(ns["dom_state"])
-        assert len(sig.parameters) == 0
+        assert list(sig.parameters.keys()) == ["mode"]

@@ -52,6 +52,44 @@ MODEL_NAME=gemini/gemini-2.0-flash-thinking-preview-01-21
 HEADLESS=false          # 调试建议设为 false 以观察行为
 ```
 
+### 复用本机浏览器登录态
+
+如果目标网站需要登录，推荐直接在 `.env` 中配置浏览器用户目录，让 HawkerAgent 复用你已经登录过的浏览器状态。
+
+方式 A：复用本机 Chrome Profile
+
+```ini
+HEADLESS=false
+BROWSER_EXECUTABLE_PATH=/Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+BROWSER_USER_DATA_DIR=/Users/yourname/Library/Application Support/Google/Chrome
+BROWSER_PROFILE_DIRECTORY=Default
+```
+
+说明：
+- `BROWSER_PROFILE_DIRECTORY` 常见值为 `Default`、`Profile 1`、`Profile 2`
+- 这种方式最适合“直接使用我平时登录过的网站状态”
+- 最好先关闭本机 Chrome，避免 profile lock 导致启动失败
+
+方式 B：使用导出的 `storage_state.json`
+
+```ini
+BROWSER_STORAGE_STATE=/absolute/path/to/storage_state.json
+```
+
+说明：
+- 适合不想直接复用真实浏览器目录的场景
+- 更稳定，也更适合部署环境
+
+方式 C：连接到已启动浏览器的 CDP
+
+```ini
+BROWSER_CDP_URL=http://127.0.0.1:9222
+```
+
+说明：
+- 适合你已经手动启动了一个带 `remote-debugging-port` 的浏览器
+- 可以避免真实 profile 被锁住
+
 ---
 
 ## 🚀 运行与开发

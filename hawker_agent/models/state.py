@@ -94,6 +94,8 @@ class CodeAgentState:
     done: bool = False
     answer: str = ""
     final_answer_requested: str | None = None
+    final_artifact_requested: dict[str, Any] | None = None
+    final_artifact: dict[str, Any] | None = None
 
     # 数据采集
     items: ItemStore = field(default_factory=ItemStore)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from hawker_agent.agent.evaluator import (
     _parse_final_evaluation,
     build_final_evaluation_messages,
@@ -81,3 +83,44 @@ class TestEvaluator:
         ]
         observations = _collect_recent_observations(state, limit=2)
         assert observations == ["已保存 7 条数据"]
+
+    @pytest.mark.asyncio
+    async def test_final_evaluator_does_not_force_temperature(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from hawker_agent.agent import evaluator as evaluator_mod
+
+        captured_kwargs: dict = {}
+
+        class FakeResponse:
+            text = '{"accept": true, "reason": "ok"}'
+            input_tokens = 1
+            output_tokens = 1
+            cached_tokens = 0
+            total_tokens = 2
+            cost = 0.0
+
+        class FakeClient:
+            def __init__(self, cfg): ...
+
+            async def complete_with_model(self, *args, **kwargs):
+                captured_kwargs.update(kwargs)
+                return FakeResponse()
+
+        class FakeSettings:
+            final_evaluator_enabled = True
+            small_model_name = "mini"
+            final_evaluator_reasoning_effort = ""
+
+        monkeypatch.setattr(evaluator_mod, "get_settings", lambda: FakeSettings())
+        monkeypatch.setattr(evaluator_mod, "LLMClient", FakeClient)
+
+        state = CodeAgentState()
+        result = await evaluator_mod.evaluate_final_delivery(
+            task="提取标题",
+            final_answer="完成",
+            items=[{"title": "A"}],
+            recent_observations=["已提取 1 条"],
+            state=state,
+        )
+
+        assert result is not None
+        assert "temperature" not in captured_kwargs

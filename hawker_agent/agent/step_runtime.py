@@ -207,11 +207,11 @@ def _update_progress_counters(
     progress_made = step_meta.has_progress(state)
     next_no_progress_steps = 0 if progress_made else no_progress_steps + 1
     state.no_progress_streak = next_no_progress_steps
-    if state.memory_guided_dom_steps_remaining > 0:
-        state.memory_guided_dom_steps_remaining -= 1
+    if state.sop_guided_dom_steps_remaining > 0:
+        state.sop_guided_dom_steps_remaining -= 1
         logger.info(
-            "记忆引导DOM护栏剩余步数: %d",
-            state.memory_guided_dom_steps_remaining,
+            "SOP 引导 DOM 护栏剩余步数: %d",
+            state.sop_guided_dom_steps_remaining,
         )
     return progress_made, next_no_progress_steps
 

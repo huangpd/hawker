@@ -611,7 +611,7 @@ def _patch_http_client(
 
 class TestHttpRequestACI:
     @pytest.mark.asyncio
-    async def test_long_response_is_truncated_with_marker(
+    async def test_long_response_returns_full_body_for_code(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         body = "A" * 25_000
@@ -620,12 +620,10 @@ class TestHttpRequestACI:
         raw = await http_request("https://example.com/data", max_chars=1_000)
 
         assert raw.startswith("[200]\n")
-        assert "截断" in raw
-        assert "共 25000 字符" in raw
-        # 仍应保留前缀内容
-        assert "AAAA" in raw
-        # 超出部分确被截掉
-        assert len(raw) < 25_000
+        status, parsed_body = parse_http_response(raw)
+        assert status == 200
+        assert parsed_body == body
+        assert len(parsed_body) == 25_000
 
     @pytest.mark.asyncio
     async def test_401_appends_action_hint(self, monkeypatch: pytest.MonkeyPatch) -> None:

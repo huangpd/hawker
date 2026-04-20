@@ -81,8 +81,8 @@ class CodeAgentState:
         activity_marker (int): 基础活跃度计数器，用于追踪采集项的变动。
         progress_marker (int): 实质进展计数器，反映任务目标的推进。
         no_progress_streak (int): 连续无进展的步数累计。
-        memory_guided_dom_steps_remaining (int): 命中高置信度记忆后，剩余多少步压制主动 full DOM。
-        memory_guided_reason (str): 当前记忆引导策略的说明。
+        sop_guided_dom_steps_remaining (int): 命中站点 SOP 后，剩余多少步压制主动 full DOM。
+        sop_guided_reason (str): 当前 SOP 引导策略的说明。
         trace_id (str): 全链路追踪 ID。
         run_id (str): 本次运行的短 ID（12位）。
         run_dir (Path | None): 运行产物的输出目录。
@@ -113,8 +113,8 @@ class CodeAgentState:
     activity_marker: int = 0
     progress_marker: int = 0
     no_progress_streak: int = 0
-    memory_guided_dom_steps_remaining: int = 0
-    memory_guided_reason: str = ""
+    sop_guided_dom_steps_remaining: int = 0
+    sop_guided_reason: str = ""
 
     # 运行元数据
     trace_id: str = field(default_factory=generate_trace_id)

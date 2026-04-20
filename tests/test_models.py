@@ -533,7 +533,7 @@ class TestCodeAgentHistoryList:
         assert isinstance(package["source_history_messages"], list)
         assert package["messages"][0]["role"] == "system"
 
-    def test_memory_workspace_is_rendered_in_notebook_mode(self) -> None:
+    def test_site_sop_is_rendered_in_notebook_mode(self) -> None:
         h = CodeAgentHistoryList.from_task("打开 https://example.com", "系统提示")
         h.record_step(
             step=1,
@@ -548,15 +548,12 @@ class TestCodeAgentHistoryList:
             had_error=False,
             no_progress_steps=0,
         )
-        h.set_memory_workspace(
-            [
-                "- 站点经验: 列表页优先尝试 SSR DOM 提取",
-                "- 失败约束: 不要直接猜排序参数",
-            ]
+        h.set_site_sop(
+            "Domain: example.com\nGolden Rule: 优先 SSR 提取\n\n## Gotchas\n- 不要直接猜排序参数"
         )
         workspace = h.build_prompt_package()["workspace_message"]["content"]
-        assert "[Memory Workspace]" in workspace
-        assert "列表页优先尝试 SSR DOM 提取" in workspace
+        assert "[Site SOP]" in workspace
+        assert "Golden Rule: 优先 SSR 提取" in workspace
         assert "不要直接猜排序参数" in workspace
 
     def test_compress_stub_passthrough(self) -> None:

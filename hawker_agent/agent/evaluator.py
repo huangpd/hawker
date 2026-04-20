@@ -62,7 +62,7 @@ def build_final_evaluation_messages(
         {
             "role": "system",
             "content": (
-                "你是 Hawker 的最终交付评估器。"
+                "你是 Hawker 的最终交付评估器。基于当前任务来分析，不要基于过于外部知识做评估"
                 "你只负责判断当前 final_answer 是否应该被放行。"
                 "不要改代码，不要规划下一步。"
                 "只输出 JSON：{\"accept\": true|false, \"reason\": \"...\", \"missing_requirements\": [\"...\"]}。"
@@ -70,6 +70,9 @@ def build_final_evaluation_messages(
                 "若 delivery_mode=summary_with_structured_items，则 final_answer 默认只需摘要，结构化数据由系统记录的 items/artifact 承载。"
                 "若 delivery_mode=inline_json，则 final_answer 必须满足任务对内联 JSON 的要求。"
                 "这里提供的“样本”仅是 items 的抽样预览，不代表全量条数，不能因为样本条数少于 items_count 就拒绝。"
+                "拒绝必须基于任务文本、items 样本或最近观察中的显式证据；不要用你自己的外部知识或启发式推断替代现场证据。"
+                "尤其不要仅凭 URL 编号、slug、文件名、ID 前缀、发布日期编码规则等启发式去否定结果，除非这些规则已在任务或观察中被明确证实。"
+                "若某条数据只是看起来可疑，但缺少显式证据，请在 reason 中标注疑点，或直接放行，而不是硬拒绝。"
                 "只有在样本明显与任务字段不符、items 为空、final_answer 与已采集数据明显矛盾，或交付证据严重不足时才拒绝。"
             ),
         },

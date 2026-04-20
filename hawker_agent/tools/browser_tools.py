@@ -85,10 +85,10 @@ def register_browser_tools(
         normalized = (requested_mode or "auto").lower()
         has_snapshot = _previous_snapshot() is not None
         no_progress_streak = state.no_progress_streak if state is not None else 0
-        memory_guard_active = bool(state and state.memory_guided_dom_steps_remaining > 0)
+        sop_guard_active = bool(state and state.sop_guided_dom_steps_remaining > 0)
 
         def _guard_mode(preferred: str) -> str:
-            if not memory_guard_active:
+            if not sop_guard_active:
                 return preferred
             if preferred != "full":
                 return preferred
@@ -99,11 +99,11 @@ def register_browser_tools(
             else:
                 guarded = "diff" if has_snapshot else "summary"
             logger.info(
-                "记忆引导DOM护栏生效: action=%s requested=%s -> effective=%s reason=%s",
+                "SOP 引导 DOM 护栏生效: action=%s requested=%s -> effective=%s reason=%s",
                 action_name,
                 preferred,
                 guarded,
-                state.memory_guided_reason if state is not None else "",
+                state.sop_guided_reason if state is not None else "",
             )
             return guarded
 

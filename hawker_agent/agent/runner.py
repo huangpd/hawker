@@ -12,10 +12,11 @@ from hawker_agent.agent.prompts import build_system_prompt
 from hawker_agent.agent.step_runtime import run_agent_step
 from hawker_agent.browser.session import BrowserSession
 from hawker_agent.config import get_settings
+from hawker_agent.knowledge.observer import maybe_generate_and_store_site_sop
+from hawker_agent.knowledge.store import SiteSOP, SiteSOPStore
 from hawker_agent.llm.client import LLMClient
 from hawker_agent.llm.tokenizer import count_tokens
 from hawker_agent.langfuse_client import flush_langfuse
-from hawker_agent.memory.store import MemoryStore, build_raw_code_memories
 from hawker_agent.models.cell import CodeCell
 from hawker_agent.models.history import CodeAgentHistoryList
 from hawker_agent.models.result import CodeAgentResult
@@ -30,27 +31,36 @@ from hawker_agent.tools.registry import ToolRegistry
 logger = logging.getLogger(__name__)
 
 
-def _build_memory_workspace_entries(matches: list) -> list[str]:
-    """构建注入给模型的 Memory Workspace 条目。
+def _build_site_sop_workspace(sop: SiteSOP, *, max_chars: int = 5000) -> str:
+    """构建注入给模型的站点 SOP 摘要。"""
+    body = sop.sop_markdown.strip()
+    if len(body) > max_chars:
+        body = body[: max_chars - 20].rstrip() + "\n... [SOP 已截断]"
+    return (
+        f"Domain: {sop.domain}\n"
+        f"Page Pattern: {sop.page_pattern or '(generic)'}\n"
+        f"Golden Rule: {sop.golden_rule}\n"
+        f"Workflow Kind: {sop.workflow_kind}\n"
+        f"Should Inspect First: {sop.should_inspect_first}\n"
+        f"Preferred Entry: {sop.preferred_entry or '(none)'}\n"
+        f"Field Contract: {', '.join(sop.field_contract or []) or '(none)'}\n"
+        f"Version: {sop.version}\n\n"
+        f"{body}"
+    )
 
-    对 raw_* 记忆附带 detail 片段，帮助模型直接复用可执行上下文。
-    """
-    entries: list[str] = []
-    for match in matches:
-        rendered = match.render()
-        entries.append(rendered)
 
-        memory_type = getattr(match.entry, "memory_type", "")
-        detail = str(getattr(match.entry, "detail", "") or "").strip()
-        if not memory_type.startswith("raw_") or not detail:
-            continue
-
-        # 控制 token：每条 detail 限长，避免 Memory Workspace 膨胀。
-        detail_snippet = detail[:1500]
-        if len(detail) > 1500:
-            detail_snippet += "\n... [detail 已截断]"
-        entries.append(f"{rendered}\n[Memory Detail]\n{detail_snippet}")
-    return entries[:6]
+def _build_site_sop_execution_instruction(sop: SiteSOP, task: str) -> str:
+    """在页面模式精确命中时注入强执行指令。"""
+    if not sop.page_pattern or sop.should_inspect_first:
+        return ""
+    fields = ", ".join(sop.field_contract or [])
+    field_text = f"目标字段为: {fields}。" if fields else ""
+    return (
+        "已命中一条高置信站点 SOP，且页面模式已对齐当前任务。"
+        f"Domain={sop.domain}; page_pattern={sop.page_pattern}; workflow={sop.workflow_kind}; preferred_entry={sop.preferred_entry}. "
+        "下一步应直接使用已验证的提取 workflow，除非提取失败，否则不要先做页面侦察、不要先调用 inspect_page()。"
+        f"{field_text}"
+    )
 
 
 def _build_output_format_instruction(task: str) -> str:
@@ -244,7 +254,7 @@ async def run(
         try:
             # 初始化组件
             llm = LLMClient(cfg)
-            memory_store = MemoryStore(cfg.memory_db_path)
+            sop_store = SiteSOPStore(cfg.knowledge_db_path)
             reg = registry or ToolRegistry()
         
             # 加载指令 (默认指令 + 用户自定义)
@@ -257,10 +267,6 @@ async def run(
                 custom_content = custom_path.read_text(encoding="utf-8").strip()
                 if custom_content:
                     instructions += "\n\n" + custom_content
-            output_format_instruction = _build_output_format_instruction(task)
-            if output_format_instruction:
-                instructions += "\n\n" + output_format_instruction
-
             history = CodeAgentHistoryList.from_task(
                 task,
                 system_prompt="", # 稍后在工具注册完后再填充
@@ -269,28 +275,29 @@ async def run(
             # 为 history 注入 token 计数函数
             history._count_tokens_fn = lambda msgs: count_tokens(msgs, cfg.model_name)
 
-            recalled_memories = memory_store.search(task, limit=5)
-            if recalled_memories:
-                history.set_memory_workspace(_build_memory_workspace_entries(recalled_memories))
-                logger.info("启动时命中 %d 条站点记忆", len(recalled_memories))
-                for idx, match in enumerate(recalled_memories, start=1):
-                    logger.info(
-                        "记忆召回 #%d: site=%s score=%.1f negative=%s summary=%s",
-                        idx,
-                        match.entry.site_key,
-                        match.score,
-                        match.entry.negative,
-                        match.entry.summary,
-                    )
-                top_match = recalled_memories[0]
-                if top_match.score >= 130:
-                    state.memory_guided_dom_steps_remaining = 2
-                    state.memory_guided_reason = top_match.entry.summary
-                    logger.info(
-                        "启用记忆引导DOM护栏: 前 %d 步压制主动 full DOM | reason=%s",
-                        state.memory_guided_dom_steps_remaining,
-                        state.memory_guided_reason,
-                    )
+            active_sop = sop_store.find_for_task(task)
+            output_format_instruction = _build_output_format_instruction(task)
+            if output_format_instruction:
+                instructions += "\n\n" + output_format_instruction
+            if active_sop:
+                history.set_site_sop(_build_site_sop_workspace(active_sop))
+                strong_execution_instruction = _build_site_sop_execution_instruction(active_sop, task)
+                if strong_execution_instruction:
+                    instructions += "\n\n" + strong_execution_instruction
+                logger.info(
+                    "启动时命中站点 SOP: domain=%s page_pattern=%s version=%d reason=%s",
+                    active_sop.domain,
+                    active_sop.page_pattern,
+                    active_sop.version,
+                    active_sop.update_reason,
+                )
+                state.sop_guided_dom_steps_remaining = 2
+                state.sop_guided_reason = active_sop.golden_rule
+                logger.info(
+                    "启用 SOP 引导 DOM 护栏: 前 %d 步压制主动 full DOM | reason=%s",
+                    state.sop_guided_dom_steps_remaining,
+                    state.sop_guided_reason,
+                )
 
             cells: list[CodeCell] = []
             no_progress_steps = 0
@@ -325,24 +332,18 @@ async def run(
                 namespace = HawkerNamespace(system_dict, str(run_dir))
 
                 async def _finish(stop_reason: Literal["done", "token_budget", "no_progress", "max_steps"], step: int) -> CodeAgentResult:
-                    try:
-                        entries = build_raw_code_memories(task, state)
-                        saved = memory_store.upsert_entries(entries)
-                        if saved:
-                            logger.info("本次运行写入/更新 %d 条记忆", len(saved))
-                            for idx, entry in enumerate(saved, start=1):
-                                logger.info(
-                                    "记忆写回 #%d: site=%s intent=%s type=%s negative=%s step=%d summary=%s",
-                                    idx,
-                                    entry.site_key,
-                                    entry.task_intent,
-                                    entry.memory_type,
-                                    entry.negative,
-                                    entry.source_step,
-                                    entry.summary,
-                                )
-                    except Exception as exc:
-                        logger.warning("记忆总结失败，已跳过写入: %s", exc)
+                    if cfg.observer_enabled:
+                        try:
+                            await maybe_generate_and_store_site_sop(
+                                task=task,
+                                state=state,
+                                cells=cells,
+                                browser=br,
+                                sop_store=sop_store,
+                                cfg=cfg,
+                            )
+                        except Exception as exc:
+                            logger.warning("Observer 旁路生成失败，已忽略: %s", exc)
                     return _build_result(state, cells, stop_reason, step, log_path, task, cfg.model_name, namespace)
 
                 for step in range(1, max_steps + 1):

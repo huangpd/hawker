@@ -68,7 +68,7 @@ class CodeAgentHistoryList:
         _recent_message_window (int): 在 Notebook 模式中保留的最近原始消息数量。
         _runtime_snapshot (str): 当前运行时快照文本。
         _namespace_snapshot (str): 命名空间快照文本。
-        _memory_workspace (list[str]): 召回到的站点经验和策略记忆。
+        _site_sop (str): 当前任务命中的站点 SOP 摘要。
         _dom_workspace (DOMWorkspaceEntry | None): 增量 DOM 工作区。
         _milestones (list[str]): 最近确认过的有效进展摘要。
         _lessons (list[str]): 最近的失败或卡住经验摘要。
@@ -86,7 +86,7 @@ class CodeAgentHistoryList:
     _max_lessons: int = 8
     _runtime_snapshot: str = ""
     _namespace_snapshot: str = ""
-    _memory_workspace: list[str] = field(default_factory=list)
+    _site_sop: str = ""
     _dom_workspace: DOMWorkspaceEntry | None = None
     _milestones: list[str] = field(default_factory=list)
     _lessons: list[str] = field(default_factory=list)
@@ -175,17 +175,9 @@ class CodeAgentHistoryList:
             ttl=ttl_map[mode],
         )
 
-    def set_memory_workspace(self, entries: list[str]) -> None:
-        """设置当前任务的 Memory Workspace 条目。"""
-        cleaned: list[str] = []
-        seen: set[str] = set()
-        for entry in entries:
-            text = entry.strip()
-            if not text or text in seen:
-                continue
-            cleaned.append(text)
-            seen.add(text)
-        self._memory_workspace = cleaned[:6]
+    def set_site_sop(self, sop_markdown: str) -> None:
+        """设置当前任务命中的站点 SOP 摘要。"""
+        self._site_sop = sop_markdown.strip()
 
     # -- 读取（供 LLM 调用） --
 
@@ -229,7 +221,7 @@ class CodeAgentHistoryList:
                     "milestones": list(self._milestones),
                     "long_term_memory": list(self._lessons),
                     "namespace_snapshot": self._namespace_snapshot or "无持久化变量。",
-                    "memory_workspace": list(self._memory_workspace),
+                    "site_sop": self._site_sop or "暂无站点 SOP。",
                     "dom_workspace": self._dom_workspace.render() if self._dom_workspace else "暂无页面增量上下文。",
                 },
             }
@@ -363,8 +355,7 @@ class CodeAgentHistoryList:
         """
         milestones_text = "\n".join(self._milestones or ["- 暂无已确认里程碑"])
         lessons_text = "\n".join(self._lessons or ["- 暂无失败经验"])
-        memory_lines = self._memory_workspace or ["- 暂无站点经验记忆"]
-        memory_text = "\n".join(memory_lines)
+        site_sop_text = self._site_sop or "暂无站点 SOP。"
         dom_workspace_text = self._dom_workspace.render() if self._dom_workspace else "暂无页面增量上下文。"
         return (
             "[Notebook Workspace]\n"
@@ -377,8 +368,8 @@ class CodeAgentHistoryList:
             f"{lessons_text}\n\n"
             "[Namespace Snapshot]\n"
             f"{self._namespace_snapshot or '无持久化变量。'}\n\n"
-            "[Memory Workspace]\n"
-            f"{memory_text}\n\n"
+            "[Site SOP]\n"
+            f"{site_sop_text}\n\n"
             "[DOM Workspace]\n"
             f"{dom_workspace_text}\n\n"
             "[STM Policy]\n"

@@ -22,14 +22,14 @@
 - `Milestones`：已经确认成功的关键里程碑
 - `Long-Term Memory`：已经验证过的失败路径、限制和经验教训
 - `Namespace Snapshot`：当前可直接使用的持久化变量摘要
-- `Memory Workspace`：历史同站点或同任务的可复用经验
+- `Site SOP`：该站点已经沉淀出的标准作业程序
 - `DOM Workspace`：最近一次显式请求的 `diff/full` 页面上下文
 
 看到这些内容时：
 - 把它当作当前真实工作区状态，而不是需要重新验证的聊天历史
 - 优先复用 `Namespace Snapshot` 中已有变量，不要重复定义
-- `Memory Workspace` 是过往任务沉淀出的经验提示，优先参考，但如现场证据冲突，以当前页面和网络事实为准
-- 如果 `Memory Workspace` 已命中同站点经验，前 1-2 步优先走低成本验证：`summary + js()/get_network_log()`，不要主动请求 `full DOM`
+- `Site SOP` 是该站点已验证过的标准路径，优先参考，但如现场证据冲突，以当前页面和网络事实为准
+- 如果 `Site SOP` 已命中当前站点，前 1-2 步优先走低成本验证：`summary + js()/get_network_log()`，不要主动请求 `full DOM`
 - `DOM Workspace` 代表当前页面的最近结构证据；除非页面再次变化，不要重复请求同类 DOM
 - 更早步骤的 Trial-and-Error 已被清理；调试时只参考最近几条原始消息
 

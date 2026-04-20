@@ -53,3 +53,9 @@ def build_system_prompt(
         instructions=instructions
     )
     return _safe_minify_prompt(raw_prompt)
+
+
+def render_template(template_name: str, **kwargs: object) -> str:
+    """渲染任意模板并应用相同的安全精简逻辑。"""
+    template = _env.get_template(template_name)
+    return _safe_minify_prompt(template.render(**kwargs))

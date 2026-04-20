@@ -26,7 +26,7 @@ class Settings(BaseSettings):
         max_no_progress_steps (int): 停止前允许的最大无进展步数。默认为 10。
         message_compression_tokens (int): 触发消息压缩的 token 阈值。默认为 12,000。
         scrape_dir (Path): 存储抓取数据的目录。默认为 "crawler_agent"。
-        memory_db_path (Path): 本地记忆数据库路径。默认为 "memory_db_path/memory.db"。
+        knowledge_db_path (Path): SQLite 站点 SOP 数据库路径。默认为 "hawker_file/knowledge.db"。
         headless (bool): 是否以无头模式运行浏览器。默认为 False。
         log_level (str): 日志级别（如 "INFO", "DEBUG"）。默认为 "INFO"。
     """
@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     healer_max_attempts: int = 3
     final_evaluator_enabled: bool = True
     final_evaluator_reasoning_effort: str = ""
+    observer_enabled: bool = True
+    observer_reasoning_effort: str = ""
     langfuse_public_key: str | None = None
     langfuse_secret_key: str | None = None
     langfuse_base_url: str | None = None
@@ -62,7 +64,7 @@ class Settings(BaseSettings):
 
     # 文件系统
     scrape_dir: Path = Path("hawker_file")
-    memory_db_path: Path = scrape_dir / Path("memory.db")
+    knowledge_db_path: Path = scrape_dir / Path("knowledge.db")
 
     # 浏览器
     headless: bool = False
@@ -91,10 +93,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _sync_paths(self) -> "Settings":
-        """在用户仅覆盖 `scrape_dir` 时，同步默认的 memory.db 位置。"""
-        default_memory_path = Path("hawker_file") / "memory.db"
-        if self.memory_db_path == default_memory_path:
-            self.memory_db_path = self.scrape_dir / "memory.db"
+        """在用户仅覆盖 `scrape_dir` 时，同步默认的知识库路径。"""
+        default_knowledge_path = Path("hawker_file") / "knowledge.db"
+        if self.knowledge_db_path == default_knowledge_path:
+            self.knowledge_db_path = self.scrape_dir / "knowledge.db"
         return self
 
 

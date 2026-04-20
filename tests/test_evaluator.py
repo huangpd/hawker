@@ -67,6 +67,8 @@ class TestEvaluator:
         assert "summary_with_structured_items" in messages[1]["content"]
         assert "不能因为样本条数少于 items_count 就拒绝" in messages[0]["content"]
         assert "优先依据任务要求验收产出物" in messages[0]["content"]
+        assert "不要仅凭 URL 编号" in messages[0]["content"]
+        assert "拒绝必须基于任务文本、items 样本或最近观察中的显式证据" in messages[0]["content"]
 
     @pytest.mark.asyncio
     async def test_final_evaluator_does_not_force_temperature(self, monkeypatch: pytest.MonkeyPatch) -> None:

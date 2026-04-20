@@ -302,11 +302,11 @@ class TestBrowserToolModes:
         assert result["selector"]["selector"] == ".item"
         assert "js_snippet" in result["selector"]
 
-    async def test_memory_guard_downgrades_explicit_full_dom_state(self) -> None:
+    async def test_sop_guard_downgrades_explicit_full_dom_state(self) -> None:
         registry = ToolRegistry()
         history = MagicMock()
         session = MagicMock()
-        state = CodeAgentState(memory_guided_dom_steps_remaining=2, memory_guided_reason="先按记忆低成本验证")
+        state = CodeAgentState(sop_guided_dom_steps_remaining=2, sop_guided_reason="先按 SOP 低成本验证")
 
         register_browser_tools(registry, session, history, state)
         dom_state = registry.as_namespace_dict()["dom_state"]
@@ -330,11 +330,11 @@ class TestBrowserToolModes:
 
         assert "DOM=summary" in result
 
-    async def test_memory_guard_downgrades_explicit_full_nav(self) -> None:
+    async def test_sop_guard_downgrades_explicit_full_nav(self) -> None:
         registry = ToolRegistry()
         history = MagicMock()
         session = MagicMock()
-        state = CodeAgentState(memory_guided_dom_steps_remaining=1, memory_guided_reason="该站点优先 SSR 直提")
+        state = CodeAgentState(sop_guided_dom_steps_remaining=1, sop_guided_reason="该站点优先 SSR 直提")
 
         register_browser_tools(registry, session, history, state)
         nav = registry.as_namespace_dict()["nav"]

@@ -28,6 +28,7 @@ _BLOCKED_HOSTS = {
 # ─── ACI：响应截断与语义化错误映射 ──────────────────────────────
 
 HTTP_RESPONSE_MAX_CHARS = 20_000
+HTTP_OBSERVATION_PREVIEW_CHARS = 300
 HTTP_JSON_MAX_ITEMS = 100
 
 
@@ -81,7 +82,7 @@ def _classify_exception(exc: BaseException) -> str:
 
 
 def _truncate_http_response(text: str, *, limit: int = HTTP_RESPONSE_MAX_CHARS) -> tuple[str, bool]:
-    """截断 http_request 响应文本，返回 (body, truncated?)。"""
+    """截断文本，仅供 Observation 摘要使用。"""
     if limit <= 0:
         return text, False
     if len(text) <= limit:
@@ -89,6 +90,23 @@ def _truncate_http_response(text: str, *, limit: int = HTTP_RESPONSE_MAX_CHARS) 
     sample = text[:limit]
     tail = f"\n... [截断，共 {len(text)} 字符，已保留前 {limit}]"
     return sample + tail, True
+
+
+def _build_http_observation_summary(text: str, *, content_type: str, preview_limit: int) -> str:
+    """构建面向模型的高密度 Observation 摘要，不影响返回值。"""
+    preview, truncated = _truncate_http_response(text, limit=preview_limit)
+    normalized_preview = " ".join(preview.split())
+    if len(normalized_preview) > preview_limit:
+        normalized_preview = normalized_preview[:preview_limit]
+    summary_parts = [f"type={content_type}"]
+    if "<entry>" in text:
+        summary_parts.append(f"entries≈{text.count('<entry>')}")
+    if normalized_preview:
+        summary_parts.append(f"preview={normalized_preview}")
+    if truncated:
+        summary_parts.append(f"preview_truncated->{preview_limit}")
+    summary_parts.append("body=full_returned_to_code")
+    return " | ".join(summary_parts)
 
 
 def _traverse_pick_path(data: Any, path: str) -> Any:
@@ -327,8 +345,8 @@ async def http_request(
     发送 HTTP 请求，返回完整响应文本。
 
     面向 Agent 的改进：
-    - 响应体超过 ``max_chars`` 字符时自动截断并追加 ``[截断，共 N 字符]`` 尾巴，
-      避免整份 HTML/JSON 吃掉上下文。
+    - 返回值始终保留完整响应正文，供代码继续解析。
+    - ``max_chars`` 仅控制发给模型的 Observation 预览长度，不再截断返回值本身。
     - 非 2xx 响应会附加 ``\n[hint] ...`` 行动建议（401/403/429/5xx 等）。
     - 底层异常（超时/连接失败/重定向过多）不会再把原始 traceback 扔给模型，
       而是翻译成 ``[错误] {reason}\n[hint] {建议}`` 的语义摘要。
@@ -401,12 +419,21 @@ async def http_request(
         return rendered
 
     content_type = resp.headers.get("Content-Type", "unknown").split(";")[0]
-    body_text, truncated = _truncate_http_response(resp.text, limit=max_chars)
+    body_text = resp.text
     status_note = str(resp.status_code)
     metrics = f"size={len(resp.text)}"
-    if truncated:
-        metrics += f",truncated->{max_chars}"
-    emit_tool_observation("http_request", status_note, metrics, f"type={content_type}")
+    if max_chars > 0:
+        metrics += f",preview->{max_chars}"
+    emit_tool_observation(
+        "http_request",
+        status_note,
+        metrics,
+        _build_http_observation_summary(
+            resp.text,
+            content_type=content_type,
+            preview_limit=max_chars if max_chars > 0 else HTTP_OBSERVATION_PREVIEW_CHARS,
+        ),
+    )
     rendered = f"[{resp.status_code}]\n{body_text}"
     if annotate_hints and resp.status_code >= 400:
         hint = _status_hint_for(resp.status_code)
@@ -529,7 +556,7 @@ async def fetch(
     - ``pick="data.items"``：解析 JSON 后沿点号路径钻取（仅 json 模式）。
     - ``json_pointer="/data/0"``：RFC 6901 JSON Pointer 取值（仅 json 模式）。
     - ``max_items=100``：JSON 列表截断阈值；``0`` 表示不截断。
-    - ``max_chars=20000``：响应正文截断阈值（text/raw 模式及 json 内部 http_request）。
+    - ``max_chars=20000``：Observation 预览截断阈值（text/raw 模式）。返回值始终为完整正文。
     """
     normalized_parse = (parse or "json").lower()
     if normalized_parse == "json":

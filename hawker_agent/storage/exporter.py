@@ -170,18 +170,17 @@ def save_result_json(
     result_dir.mkdir(parents=True, exist_ok=True)
     path = result_dir / "result.json"
 
-    result_text = _build_result_text(answer, final_artifact, items)
-    artifact_payload = _compact_artifact_for_result(final_artifact, items)
+    normalized_items = _reconcile_downloaded_files(run_dir, items)
+    result_text = _build_result_text(answer, final_artifact, normalized_items)
 
     data = {
         "result": result_text,
-        "artifact": artifact_payload,
-        "items": items,
-        "items_count": len(items),
+        "items": normalized_items,
+        "items_count": len(normalized_items),
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    logger.info("结果已保存: %s (%d 条数据)", path, len(items))
+    logger.info("结果已保存: %s (%d 条数据)", path, len(normalized_items))
 
     # 正式 result.json 已包含完整数据，清理 run_dir 根目录下的 checkpoint 文件
     for fname in checkpoint_files or set():
@@ -196,11 +195,27 @@ def save_result_json(
     return path
 
 
+def _reconcile_downloaded_files(run_dir: Path, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """导出前核对 downloaded_file 是否真实存在，避免对外谎报下载成功。"""
+    normalized: list[dict[str, Any]] = []
+    for item in items:
+        row = dict(item)
+        downloaded_file = row.get("downloaded_file")
+        if isinstance(downloaded_file, str) and downloaded_file.strip():
+            candidate = run_dir / downloaded_file
+            if not candidate.exists() or not candidate.is_file():
+                logger.warning("导出时发现缺失下载文件，已降级标记: %s", downloaded_file)
+                row.pop("downloaded_file", None)
+                row["download_status"] = "missing_on_disk"
+        normalized.append(row)
+    return normalized
+
+
 def _build_result_text(answer: str, artifact: dict[str, Any] | None, items: list[dict]) -> str:
     """构建面向人类阅读的顶层 result 文本。
 
-    对 JSON 交付，机器可读数据已经由 ``items`` 或 ``artifact.content`` 承载，
-    顶层 ``result`` 不再保存一份截断 JSON，避免三处重复表达同一份数据。
+    对 JSON 交付，机器可读数据统一由 ``items`` 承载，
+    顶层 ``result`` 不再保存一份截断 JSON。
     """
     if isinstance(artifact, dict) and str(artifact.get("type") or "").lower() == "json":
         content = artifact.get("content")
@@ -215,46 +230,13 @@ def _build_result_text(answer: str, artifact: dict[str, Any] | None, items: list
                     parts.append(f"status={status}")
                 if message:
                     parts.append(str(message))
-                parts.append("详见 artifact.content 字段。")
+                    parts.append("详见 items 字段。")
                 return " ".join(parts)
-        return "[JSON 结果] 详见 artifact.content 字段。"
+        return "[JSON 结果] 详见 items 字段。"
 
     if len(answer) > 2000:
-        return answer[:1990] + "... [结果已截断，详见 artifact.content 或 items 字段]"
+        return answer[:1990] + "... [结果已截断，详见 items 字段]"
     return answer
-
-
-def _compact_artifact_for_result(
-    artifact: dict[str, Any] | None,
-    items: list[dict],
-) -> dict[str, Any] | None:
-    """压缩落盘 artifact，避免与顶层 items 重复存储。
-
-    规则：
-    - ``items`` 是结构化列表的权威来源。
-    - 如果 JSON artifact 的正文就是同一份 items，则只保留引用标记。
-    - 如果 artifact 还包含非 items 的业务元数据，则保留这些正文。
-    """
-    if artifact is None:
-        return None
-
-    payload = _to_jsonable(artifact)
-    if not isinstance(payload, dict):
-        return payload
-
-    artifact_type = str(payload.get("type") or "").lower()
-    if artifact_type != "json":
-        return payload
-
-    content = payload.get("content")
-    artifact_items = payload.get("items")
-    if isinstance(content, list) and content == items:
-        return {"type": "json", "content_ref": "items"}
-    if isinstance(content, dict) and content.get("items") == items and set(content.keys()) == {"items"}:
-        return {"type": "json", "content_ref": "items"}
-    if isinstance(artifact_items, list) and artifact_items == items:
-        payload.pop("items", None)
-    return payload
 
 
 def save_llm_io_json(

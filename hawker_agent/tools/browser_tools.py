@@ -368,7 +368,7 @@ def register_browser_tools(
         """通过 DOM 索引 [i_*] 向输入框填写文本"""
         return await actions.fill_input(session, index, text)
 
-    async def browser_download(url: str, filename: str | None = None, **kwargs: object) -> str:
+    async def browser_download(url: str, filename: str | None = None, **kwargs: object) -> dict[str, Any]:
         """利用浏览器会话下载文件"""
         return await actions.browser_download(session, url, filename=filename, **kwargs)
 

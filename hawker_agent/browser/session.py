@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import logging
-import shutil
-import tempfile
 from pathlib import Path
 
 from browser_use.browser.profile import BrowserProfile
@@ -40,9 +38,10 @@ class BrowserSession:
             "storage_state": settings.browser_storage_state,
             "channel": settings.browser_channel,
             "cdp_url": settings.browser_cdp_url,
+            # 显式下载由 curl-cffi 完成，关闭 browser-use 的 PDF 自动下载避免竞争。
+            "auto_download_pdfs": False,
         }
         self._session: _UpstreamBrowserSession | None = None
-        self._download_path: Path | None = None
         self.target_dir: Path | None = None  # 本次任务产物的最终保存目录
         # 内部状态
         self.netlog_installed: bool = False
@@ -54,10 +53,6 @@ class BrowserSession:
         Returns:
             BrowserSession: 已启动的会话封装对象。
         """
-        # 1. 创建专用的临时下载目录
-        self._download_path = Path(tempfile.mkdtemp(prefix="hawker_browser_"))
-        
-        # 2. 启动浏览器
         profile_kwargs = {
             key: value
             for key, value in self._browser_profile_kwargs.items()
@@ -67,8 +62,7 @@ class BrowserSession:
         self._session = _UpstreamBrowserSession(browser_profile=profile)
         await self._session.start()
         
-        logger.info("浏览器会话已启动 (headless=%s, tmp_download=%s)", 
-                    self._headless, self._download_path)
+        logger.info("浏览器会话已启动 (headless=%s)", self._headless)
         return self
 
     async def __aexit__(
@@ -92,56 +86,9 @@ class BrowserSession:
                 logger.debug("浏览器会话关闭异常", exc_info=True)
             self._session = None
             
-        # 2. 收割产物：将所有下载文件移动到 target_dir
-        if self.target_dir and self.target_dir.exists():
-            # 扫描我们要搜刮的目录列表
-            harvest_targets = []
-            if self._download_path and self._download_path.exists():
-                harvest_targets.append(self._download_path)
-            
-            # 同时扫描 browser-use 可能产生的其他随机下载目录
-            u_temp_dir = Path(tempfile.gettempdir())
-            harvest_targets.extend(list(u_temp_dir.glob("browser-use-downloads-*")))
-
-            for d in harvest_targets:
-                if not d.is_dir():
-                    continue
-                try:
-                    for f in d.rglob("*"):
-                        if f.is_file() and f.stat().st_size > 0:
-                            # 避免重复移动同一个文件（多个目录可能有重叠）
-                            if not f.exists():
-                                continue
-
-                            dest = self.target_dir / f.name
-                            # 处理同名冲突：增加随机后缀
-                            if dest.exists():
-                                short_id = Path(tempfile.mktemp()).name[-6:]
-                                dest = self.target_dir / f"{f.stem}_{short_id}{f.suffix}"
-                            
-                            shutil.move(str(f), str(dest))
-                            logger.info("📦 归档下载产物: %s", dest.name)
-                except Exception as e:
-                    logger.debug("归档目录 %s 时发生错误: %s", d, e)
-
-        # 3. 彻底清理所有临时下载目录
-        if self._download_path and self._download_path.exists():
-            try:
-                shutil.rmtree(self._download_path)
-            except Exception:
-                pass
-
-        u_temp_dir = Path(tempfile.gettempdir())
-        for p in u_temp_dir.glob("browser-use-downloads-*"):
-            if p.is_dir():
-                try:
-                    shutil.rmtree(p)
-                except Exception:
-                    pass
-
         self.netlog_installed = False
         self.netlog_cursor = 0
-        logger.info("浏览器会话已关闭并完成产物归档")
+        logger.info("浏览器会话已关闭")
 
     @property
     def raw(self) -> _UpstreamBrowserSession:

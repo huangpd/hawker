@@ -87,7 +87,8 @@ async def test_real_streaming_download(tmp_path):
         
         # 验证文件落地
         expected_path = run_dir / target_filename
-        assert "[OK]" in result
+        assert result["ok"] is True
+        assert result["filename"] == target_filename
         assert expected_path.exists()
         assert expected_path.stat().st_size > 0
 

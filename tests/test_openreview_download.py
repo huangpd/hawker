@@ -32,7 +32,8 @@ async def test_openreview_pdf_browser_download(tmp_path: Path) -> None:
         result = await browser_download(pdf_url, filename=filename, run_dir=str(run_dir))
 
     saved_path = run_dir / filename
-    assert "[OK]" in result
+    assert result["ok"] is True
+    assert result["filename"] == filename
     assert saved_path.exists()
     assert saved_path.stat().st_size > 0
     with open(saved_path, "rb") as f:

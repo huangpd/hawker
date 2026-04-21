@@ -247,7 +247,7 @@ def register_core_actions(
     """
     # 提示：核心动作必须带文档字符串，以便 build_capabilities_list 提取
     
-    fn_append = _make_append_items(state)
+    fn_append = _make_append_items(state, run_dir)
     fn_append.__doc__ = "保存数据。追加到 all_items（自动去重），这是保存数据的唯一方式。"
     registry.register(fn_append, name="append_items", category="数据保存")
     
@@ -355,7 +355,23 @@ def build_system_dict(
     return build_namespace(state, registry.as_namespace_dict(), run_dir)
 
 
-def _make_append_items(state: CodeAgentState) -> Callable:
+def _reconcile_item_downloads(run_dir: str, items: list[dict]) -> list[dict]:
+    """写入前核对 downloaded_file 是否真实存在。"""
+    base = Path(run_dir)
+    normalized: list[dict] = []
+    for item in items:
+        row = dict(item)
+        downloaded_file = row.get("downloaded_file")
+        if isinstance(downloaded_file, str) and downloaded_file.strip():
+            candidate = base / downloaded_file
+            if not candidate.exists() or not candidate.is_file():
+                row.pop("downloaded_file", None)
+                row["download_status"] = "missing_on_disk"
+        normalized.append(row)
+    return normalized
+
+
+def _make_append_items(state: CodeAgentState, run_dir: str) -> Callable:
     """创建 append_items 工具函数。
 
     Args:
@@ -365,7 +381,7 @@ def _make_append_items(state: CodeAgentState) -> Callable:
         Callable: append_items 函数。
     """
     async def append_items(items: object) -> list[dict]:
-        normalized = normalize_items(items)
+        normalized = _reconcile_item_downloads(run_dir, normalize_items(items))
         added, skipped = state.items.append(normalized)
         if added:
             state.mark_activity()

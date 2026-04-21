@@ -324,8 +324,8 @@ def test_save_result_json_persists_artifact(tmp_path: Path) -> None:
     )
 
     data = json_mod.loads(result_path.read_text(encoding="utf-8"))
-    assert data["artifact"]["type"] == "markdown"
-    assert data["artifact"]["content"] == "# done"
+    assert "artifact" not in data
+    assert data["result"] == "done"
 
 
 def test_save_result_json_does_not_duplicate_json_items_artifact(tmp_path: Path) -> None:
@@ -339,8 +339,32 @@ def test_save_result_json_does_not_duplicate_json_items_artifact(tmp_path: Path)
 
     data = json_mod.loads(result_path.read_text(encoding="utf-8"))
     assert data["result"] == "[结构化 JSON 结果] 共 2 条记录，详见 items 字段。"
-    assert data["artifact"] == {"type": "json", "content_ref": "items"}
     assert data["items"] == items
+
+
+def test_save_result_json_reconciles_missing_downloaded_files(tmp_path: Path) -> None:
+    result_path = save_result_json(
+        tmp_path,
+        [
+            {"title": "A", "downloaded_file": "exists.pdf"},
+            {"title": "B", "downloaded_file": "missing.pdf"},
+        ],
+        "done",
+    )
+    (tmp_path / "exists.pdf").write_text("pdf", encoding="utf-8")
+    result_path = save_result_json(
+        tmp_path,
+        [
+            {"title": "A", "downloaded_file": "exists.pdf"},
+            {"title": "B", "downloaded_file": "missing.pdf"},
+        ],
+        "done",
+    )
+
+    data = json_mod.loads(result_path.read_text(encoding="utf-8"))
+    assert data["items"][0]["downloaded_file"] == "exists.pdf"
+    assert "downloaded_file" not in data["items"][1]
+    assert data["items"][1]["download_status"] == "missing_on_disk"
 
 
 def test_normalize_final_artifact_keeps_business_text_unchanged() -> None:

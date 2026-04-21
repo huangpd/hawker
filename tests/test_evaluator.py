@@ -69,6 +69,7 @@ class TestEvaluator:
         assert "优先依据任务要求验收产出物" in messages[0]["content"]
         assert "不要仅凭 URL 编号" in messages[0]["content"]
         assert "拒绝必须基于任务文本、items 样本或最近观察中的显式证据" in messages[0]["content"]
+        assert "仅有 pdf_url、download_url、文件链接或可下载地址" in messages[0]["content"]
 
     @pytest.mark.asyncio
     async def test_final_evaluator_does_not_force_temperature(self, monkeypatch: pytest.MonkeyPatch) -> None:

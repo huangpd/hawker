@@ -19,7 +19,7 @@ async def test_full_async_tools_execution(tmp_path):
         return f"Visited {url}"
     
     async def mock_download(url: str):
-        return f"Downloaded {url}"
+        return {"ok": True, "url": url, "filename": "file.pdf", "path": "/tmp/file.pdf", "size": 3}
         
     registry.register(mock_nav, name="nav")
     registry.register(mock_download, name="browser_download")

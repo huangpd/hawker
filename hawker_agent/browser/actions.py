@@ -4,11 +4,12 @@ import asyncio
 import json
 import logging
 import re
-import shutil
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from curl_cffi import AsyncSession
 
 from hawker_agent.browser.cdp import get_cdp, run_js
 from hawker_agent.browser.dom_utils import (
@@ -23,6 +24,114 @@ if TYPE_CHECKING:
     from hawker_agent.browser.session import BrowserSession
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_download_filename(value: str, fallback: str = "download") -> str:
+    """返回适合本地保存的单文件名。"""
+    name = Path(value).name or fallback
+    return re.sub(r'[\\/*?:"<>|]', "_", name)
+
+
+def _download_destination(
+    session: BrowserSession,
+    *,
+    url: str,
+    filename: str | None,
+    run_dir: str | None,
+) -> Path:
+    target_dir_value = run_dir or (str(session.target_dir) if getattr(session, "target_dir", None) else None)
+    target_dir = Path(target_dir_value) if target_dir_value else Path.cwd()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    fallback_name = Path(urllib.parse.urlparse(url).path).name or "download"
+    desired_name = _safe_download_filename(filename or fallback_name)
+    return target_dir / desired_name
+
+
+def _filename_from_content_disposition(value: str) -> str | None:
+    match = re.search(r'filename\*=UTF-8\'\'([^;\n]+)', value, re.I)
+    if match:
+        return urllib.parse.unquote(match.group(1).strip().strip('"'))
+    match = re.search(r'filename[^;=\n]*=(([\'"]).*?\2|[^;\n]*)', value, re.I)
+    if match:
+        return match.group(1).strip().strip("'\"")
+    return None
+
+
+async def _browser_user_agent(session: BrowserSession) -> str:
+    try:
+        page = await session.raw.get_current_page()
+        if page is not None:
+            value = await page.evaluate("() => navigator.userAgent")
+            if value:
+                return value
+    except Exception:
+        logger.debug("读取浏览器 User-Agent 失败", exc_info=True)
+    return "Mozilla/5.0 (compatible; HawkerAgent/1.0)"
+
+
+async def _download_with_browser_session_http(
+    session: BrowserSession,
+    *,
+    url: str,
+    filename: str | None,
+    run_dir: str | None,
+    timeout_s: float,
+) -> dict[str, Any]:
+    """使用浏览器会话 Cookie/UA 与 Chrome TLS 指纹下载并直接落盘。"""
+    parsed = urllib.parse.urlparse(url)
+    cookies = await get_cookies(session, domain=parsed.hostname or "", verbose=False)
+    cookie_map = {
+        str(cookie.get("name")): str(cookie.get("value"))
+        for cookie in cookies
+        if cookie.get("name") and cookie.get("value") is not None
+    }
+    headers = {
+        "User-Agent": await _browser_user_agent(session),
+        "Accept": "application/pdf,application/octet-stream,*/*",
+        "Referer": f"{parsed.scheme}://{parsed.netloc}/" if parsed.scheme and parsed.netloc else url,
+    }
+    destination = _download_destination(session, url=url, filename=filename, run_dir=run_dir)
+    async with AsyncSession(impersonate="chrome120", timeout=timeout_s) as client:
+        async with client.stream(
+            "GET",
+            url,
+            headers=headers,
+            cookies=cookie_map,
+            allow_redirects=True,
+        ) as response:
+            response.raise_for_status()
+            if filename is None:
+                header_name = _filename_from_content_disposition(
+                    response.headers.get("content-disposition", "")
+                )
+                if header_name:
+                    destination = destination.with_name(_safe_download_filename(header_name))
+            if destination.exists():
+                destination = destination.with_name(f"{destination.stem}_dup{destination.suffix}")
+            temp_path = destination.with_suffix(destination.suffix + ".part")
+            total = 0
+            with temp_path.open("wb") as fh:
+                async for chunk in response.aiter_content():
+                    if not chunk:
+                        continue
+                    fh.write(chunk)
+                    total += len(chunk)
+            if total <= 0:
+                temp_path.unlink(missing_ok=True)
+                raise RuntimeError("empty download body")
+            temp_path.replace(destination)
+
+    if not destination.exists() or destination.stat().st_size <= 0:
+        raise FileNotFoundError(f"browser session HTTP post-check failed: {destination}")
+    return {
+        "ok": True,
+        "url": url,
+        "requested_filename": filename or destination.name,
+        "filename": destination.name,
+        "path": str(destination),
+        "size": destination.stat().st_size,
+        "method": "curl_cffi",
+    }
 
 
 @dataclass
@@ -391,8 +500,10 @@ async def browser_download(
     url: str,
     filename: str | None = None,
     run_dir: str | None = None,
-    timeout_s: float = 30.0,
-) -> str:
+    timeout_s: float = 90.0,
+    attempts: int = 3,
+    retry_delay_s: float = 1.5,
+) -> dict[str, Any]:
     """使用浏览器原生下载能力下载文件，并等待文件落地。
 
     Args:
@@ -403,57 +514,38 @@ async def browser_download(
         timeout_s (float): 最长等待下载完成时间。
 
     Returns:
-        str: 下载结果摘要。
+        dict[str, Any]: 结构化下载结果。
     """
-    before = set(getattr(session.raw, "downloaded_files", []) or [])
-    cdp = await get_cdp(session)
-
-    try:
-        await cdp.cdp_client.send.Page.navigate(
-            params={"url": url},
-            session_id=cdp.session_id,
-        )
-    except Exception:
-        await session.raw.navigate_to(url)
-
-    deadline = asyncio.get_running_loop().time() + timeout_s
-    downloaded_path: Path | None = None
-    while asyncio.get_running_loop().time() < deadline:
-        current = list(getattr(session.raw, "downloaded_files", []) or [])
-        candidates = [Path(p) for p in current if p not in before]
-        for candidate in candidates:
-            if candidate.suffix == ".crdownload":
+    total_attempts = max(1, attempts)
+    for attempt in range(1, total_attempts + 1):
+        try:
+            result = await _download_with_browser_session_http(
+                session,
+                url=url,
+                filename=filename,
+                run_dir=run_dir,
+                timeout_s=timeout_s,
+            )
+            emit_tool_observation(
+                "browser_download",
+                "OK",
+                f"method=curl_cffi attempt={attempt}/{total_attempts} size={result['size']}",
+                f"file={result['filename']}",
+            )
+            return result
+        except Exception as exc:
+            emit_tool_observation(
+                "browser_download",
+                "RETRY" if attempt < total_attempts else "FAILED",
+                f"method=curl_cffi reason={type(exc).__name__} attempt={attempt}/{total_attempts}",
+                f"url={url}",
+            )
+            if attempt < total_attempts:
+                await asyncio.sleep(retry_delay_s)
                 continue
-            if candidate.exists() and candidate.is_file() and candidate.stat().st_size > 0:
-                downloaded_path = candidate
-                break
-        if downloaded_path is not None:
-            break
-        await asyncio.sleep(0.25)
+            raise exc
 
-    if downloaded_path is None:
-        return f"[失败] 浏览器下载超时: {url}"
-
-    final_path = downloaded_path
-    if run_dir:
-        target_dir = Path(run_dir)
-        target_dir.mkdir(parents=True, exist_ok=True)
-        desired_name = filename or downloaded_path.name
-        desired_name = re.sub(r'[\\/*?:"<>|]', "_", Path(desired_name).name or downloaded_path.name)
-        destination = target_dir / desired_name
-        if destination.exists():
-            destination = target_dir / f"{destination.stem}_{downloaded_path.stem[-6:]}{destination.suffix}"
-        if downloaded_path.resolve() != destination.resolve():
-            shutil.move(str(downloaded_path), str(destination))
-            final_path = destination
-
-    emit_tool_observation(
-        "browser_download",
-        "OK",
-        f"size={final_path.stat().st_size}",
-        f"file={final_path.name}",
-    )
-    return f"[OK] 已通过浏览器下载到 {final_path}"
+    raise RuntimeError(f"browser_download failed: {url}")
 
 
 async def js(session: BrowserSession, code: str) -> Any:

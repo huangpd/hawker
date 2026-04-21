@@ -10,6 +10,7 @@ from hawker_agent.browser.actions import (
     DomActionResult,
     _build_search_url,
     _log_js_summary,
+    browser_download,
 )
 from hawker_agent.browser.netlog import NETLOG_INJECT_JS
 from hawker_agent.observability import collect_observations
@@ -112,6 +113,7 @@ class TestBrowserSession:
                 "storage_state": Path("/tmp/browser-state.json"),
                 "channel": "chrome",
                 "cdp_url": "http://127.0.0.1:9222",
+                "auto_download_pdfs": False,
             }
 
     def test_empty_optional_browser_paths_are_none(self) -> None:
@@ -133,8 +135,7 @@ class TestBrowserSession:
     async def test_aenter_passes_browser_profile_options(self) -> None:
         with patch("hawker_agent.browser.session.get_settings") as mock_settings, \
              patch("hawker_agent.browser.session.BrowserProfile") as mock_profile_cls, \
-             patch("hawker_agent.browser.session._UpstreamBrowserSession") as mock_session_cls, \
-             patch("hawker_agent.browser.session.tempfile.mkdtemp", return_value="/tmp/hawker_browser_test"):
+             patch("hawker_agent.browser.session._UpstreamBrowserSession") as mock_session_cls:
             mock_settings.return_value = MagicMock(
                 headless=False,
                 browser_executable_path=Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
@@ -164,9 +165,107 @@ class TestBrowserSession:
                 storage_state=Path("/tmp/browser-state.json"),
                 channel="chrome",
                 cdp_url="http://127.0.0.1:9222",
+                auto_download_pdfs=False,
             )
             mock_session_cls.assert_called_once_with(browser_profile=mock_profile)
             mock_upstream.start.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_browser_download_timeout_raises() -> None:
+    session = MagicMock()
+    session.target_dir = None
+    session.raw = MagicMock()
+
+    async def _fast_sleep(_: float) -> None:
+        return None
+
+    with patch(
+        "hawker_agent.browser.actions._download_with_browser_session_http",
+        AsyncMock(side_effect=TimeoutError("download timed out")),
+    ), patch("hawker_agent.browser.actions.asyncio.sleep", _fast_sleep):
+        with pytest.raises(TimeoutError, match="download timed out"):
+            await browser_download(session, "https://example.com/file.pdf", timeout_s=0.1, attempts=1)
+
+
+@pytest.mark.asyncio
+async def test_browser_download_uses_session_target_dir(tmp_path: Path) -> None:
+    session = MagicMock()
+    session.target_dir = tmp_path / "run_dir"
+    session.target_dir.mkdir()
+    session.raw = MagicMock()
+
+    async def _fast_sleep(_: float) -> None:
+        return None
+
+    async def _fake_download(*_args, **_kwargs):
+        saved = session.target_dir / "saved.pdf"
+        saved.write_bytes(b"%PDF-1.4 fake")
+        return {
+            "ok": True,
+            "url": "https://example.com/file.pdf",
+            "filename": "saved.pdf",
+            "path": str(saved),
+            "size": saved.stat().st_size,
+        }
+
+    with patch(
+        "hawker_agent.browser.actions._download_with_browser_session_http",
+        AsyncMock(side_effect=_fake_download),
+    ), patch("hawker_agent.browser.actions.asyncio.sleep", _fast_sleep):
+        result = await browser_download(session, "https://example.com/file.pdf", filename="saved.pdf")
+
+    saved = session.target_dir / "saved.pdf"
+    assert result["ok"] is True
+    assert result["filename"] == "saved.pdf"
+    assert Path(result["path"]) == saved
+    assert saved.exists()
+
+
+@pytest.mark.asyncio
+async def test_browser_download_retries_once_then_succeeds(tmp_path: Path) -> None:
+    session = MagicMock()
+    session.target_dir = tmp_path / "run_dir_retry"
+    session.target_dir.mkdir()
+    session.raw = MagicMock()
+
+    async def _fast_sleep(_: float) -> None:
+        return None
+
+    attempts_seen = 0
+
+    async def _fake_download(*_args, **_kwargs):
+        nonlocal attempts_seen
+        attempts_seen += 1
+        if attempts_seen == 1:
+            raise TimeoutError("first try")
+        saved = session.target_dir / "retry.pdf"
+        saved.write_bytes(b"%PDF-1.4 fake")
+        return {
+            "ok": True,
+            "url": "https://example.com/retry.pdf",
+            "filename": "retry.pdf",
+            "path": str(saved),
+            "size": saved.stat().st_size,
+        }
+
+    with patch(
+        "hawker_agent.browser.actions._download_with_browser_session_http",
+        AsyncMock(side_effect=_fake_download),
+    ), patch("hawker_agent.browser.actions.asyncio.sleep", _fast_sleep):
+        result = await browser_download(
+            session,
+            "https://example.com/retry.pdf",
+            filename="retry.pdf",
+            timeout_s=0.1,
+            attempts=2,
+            retry_delay_s=0,
+        )
+
+    saved = session.target_dir / "retry.pdf"
+    assert result["ok"] is True
+    assert result["filename"] == "retry.pdf"
+    assert saved.exists()
 
 
 # ─── DomActionResult ──────────────────────────────────────────

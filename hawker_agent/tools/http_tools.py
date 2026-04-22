@@ -337,7 +337,7 @@ async def http_request(
     content: str | bytes | None = None,
     cookies: dict | str | list | None = None,
     *,
-    max_chars: int = HTTP_RESPONSE_MAX_CHARS,
+    preview_chars: int = HTTP_RESPONSE_MAX_CHARS,
     annotate_hints: bool = True,
     **kwargs: Any,
 ) -> str:
@@ -346,7 +346,7 @@ async def http_request(
 
     面向 Agent 的改进：
     - 返回值始终保留完整响应正文，供代码继续解析。
-    - ``max_chars`` 仅控制发给模型的 Observation 预览长度，不再截断返回值本身。
+    - ``preview_chars`` 仅控制发给模型的 Observation 预览长度，不再截断返回值本身。
     - 非 2xx 响应会附加 ``\n[hint] ...`` 行动建议（401/403/429/5xx 等）。
     - 底层异常（超时/连接失败/重定向过多）不会再把原始 traceback 扔给模型，
       而是翻译成 ``[错误] {reason}\n[hint] {建议}`` 的语义摘要。
@@ -356,6 +356,7 @@ async def http_request(
     - 额外的 ``timeout``、``files`` 等参数会透传给 httpx。
     """
     legacy_body = kwargs.pop("body", None)
+    preview_limit = preview_chars
     h = _parse_headers(headers)
     c = _parse_cookies(cookies)
     query_params = params
@@ -422,8 +423,8 @@ async def http_request(
     body_text = resp.text
     status_note = str(resp.status_code)
     metrics = f"size={len(resp.text)}"
-    if max_chars > 0:
-        metrics += f",preview->{max_chars}"
+    if preview_limit > 0:
+        metrics += f",preview->{preview_limit}"
     emit_tool_observation(
         "http_request",
         status_note,
@@ -431,7 +432,7 @@ async def http_request(
         _build_http_observation_summary(
             resp.text,
             content_type=content_type,
-            preview_limit=max_chars if max_chars > 0 else HTTP_OBSERVATION_PREVIEW_CHARS,
+            preview_limit=preview_limit if preview_limit > 0 else HTTP_OBSERVATION_PREVIEW_CHARS,
         ),
     )
     rendered = f"[{resp.status_code}]\n{body_text}"
@@ -455,9 +456,13 @@ async def http_json(
     pick: str | None = None,
     json_pointer: str | None = None,
     max_items: int = HTTP_JSON_MAX_ITEMS,
+    preview_chars: int = 0,
     **kwargs: Any,
 ) -> Any:
     """发送 HTTP 请求并返回解析后的 JSON 对象。
+
+    ``preview_chars`` 仅影响底层 HTTP Observation 预览长度，不影响返回给代码的
+    JSON 结构。
 
     面向 Agent 的改进：
     - ``pick="data.items"`` 直接在 Python 层钻取字段路径（点号分隔，索引用整数），
@@ -480,7 +485,7 @@ async def http_json(
         json=json,
         content=content,
         cookies=cookies,
-        max_chars=0,
+        preview_chars=preview_chars,
         annotate_hints=False,
         **kwargs,
     )
@@ -547,7 +552,7 @@ async def fetch(
     pick: str | None = None,
     json_pointer: str | None = None,
     max_items: int = HTTP_JSON_MAX_ITEMS,
-    max_chars: int = HTTP_RESPONSE_MAX_CHARS,
+    preview_chars: int = HTTP_RESPONSE_MAX_CHARS,
     **kwargs: Any,
 ) -> Any:
     """统一 HTTP 请求入口，优先使用此工具请求接口数据。
@@ -556,7 +561,7 @@ async def fetch(
     - ``pick="data.items"``：解析 JSON 后沿点号路径钻取（仅 json 模式）。
     - ``json_pointer="/data/0"``：RFC 6901 JSON Pointer 取值（仅 json 模式）。
     - ``max_items=100``：JSON 列表截断阈值；``0`` 表示不截断。
-    - ``max_chars=20000``：Observation 预览截断阈值（text/raw 模式）。返回值始终为完整正文。
+    - ``preview_chars=20000``：Observation 预览截断阈值。返回值始终为完整正文。
     """
     normalized_parse = (parse or "json").lower()
     if normalized_parse == "json":
@@ -572,7 +577,7 @@ async def fetch(
             pick=pick,
             json_pointer=json_pointer,
             max_items=max_items,
-            max_chars=max_chars,
+            preview_chars=preview_chars,
             **kwargs,
         )
     if normalized_parse in {"text", "raw"}:
@@ -587,7 +592,7 @@ async def fetch(
             json=json,
             content=content,
             cookies=cookies,
-            max_chars=max_chars,
+            preview_chars=preview_chars,
             **kwargs,
         )
     raise ValueError(f"fetch(parse=...) 仅支持 json / text / raw，收到: {parse}")

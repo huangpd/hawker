@@ -11,9 +11,11 @@ import pytest
 from hawker_agent.agent.namespace import build_namespace, register_core_actions
 from hawker_agent.agent.artifact import normalize_final_artifact, recover_items_from_artifact
 from hawker_agent.agent.prompts import build_system_prompt
+from hawker_agent.models.history import CodeAgentHistoryList
 from hawker_agent.models.state import CodeAgentState
 from hawker_agent.observability import clear_log_context, configure_logging
 from hawker_agent.storage.exporter import save_llm_io_json, save_result_json
+from hawker_agent.tools.browser_tools import register_browser_tools
 from hawker_agent.tools.data_tools import (
     clean_items,
     normalize_items,
@@ -192,15 +194,66 @@ class TestBuildNamespace:
         ns = self._get_ns(state, "/tmp/test")
         await ns["final_answer"](
             {
-                "type": "markdown",
+                "type": "text",
                 "content": "# 总结\n已完成",
                 "items": [{"url": "https://example.com"}],
             }
         )
         assert state.final_artifact_requested is not None
-        assert state.final_artifact_requested["type"] == "markdown"
+        assert state.final_artifact_requested["type"] == "text"
         assert state.final_artifact_requested["items"] == [{"url": "https://example.com"}]
         assert state.final_answer_requested == "# 总结\n已完成"
+
+    @pytest.mark.asyncio
+    async def test_browser_js_accepts_args_keyword(self) -> None:
+        state = CodeAgentState()
+
+        async def fake_js(_session, code: str):
+            return code
+
+        reg = ToolRegistry()
+        register_core_actions(reg, state, "/tmp/test")
+        history = CodeAgentHistoryList()
+        session = type("Session", (), {})()
+        from hawker_agent.tools import browser_tools as browser_tools_module
+
+        original = browser_tools_module.actions.js
+        browser_tools_module.actions.js = fake_js
+        try:
+            register_browser_tools(reg, session, history, state)
+            ns = build_namespace(state, reg.as_namespace_dict(), "/tmp/test")
+            result = await ns["js"]("(selector) => selector", args=[".repo"])
+        finally:
+            browser_tools_module.actions.js = original
+
+        assert "__hawker_args" in result
+        assert '".repo"' in result
+
+    @pytest.mark.asyncio
+    async def test_browser_js_accepts_positional_function_args(self) -> None:
+        state = CodeAgentState()
+
+        async def fake_js(_session, code: str):
+            return code
+
+        reg = ToolRegistry()
+        register_core_actions(reg, state, "/tmp/test")
+        history = CodeAgentHistoryList()
+        session = type("Session", (), {})()
+        from hawker_agent.tools import browser_tools as browser_tools_module
+
+        original = browser_tools_module.actions.js
+        browser_tools_module.actions.js = fake_js
+        try:
+            register_browser_tools(reg, session, history, state)
+            ns = build_namespace(state, reg.as_namespace_dict(), "/tmp/test")
+            result = await ns["js"]("(a, b) => [a, b]", "x", "y")
+        finally:
+            browser_tools_module.actions.js = original
+
+        assert "__hawker_args" in result
+        assert '"x"' in result
+        assert '"y"' in result
 
     @pytest.mark.asyncio
     @pytest.mark.asyncio
@@ -285,6 +338,27 @@ async def test_fetch_dispatches_to_http_json() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fetch_json_accepts_preview_chars_alias() -> None:
+    from hawker_agent.tools import http_tools as http_tools_module
+
+    captured_kwargs: dict = {}
+
+    async def fake_http_request(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return "[200]\n{\"ok\": true}"
+
+    original = http_tools_module.http_request
+    http_tools_module.http_request = fake_http_request
+    try:
+        result = await fetch("https://example.com/api", parse="json", preview_chars=321)
+    finally:
+        http_tools_module.http_request = original
+
+    assert result == {"ok": True}
+    assert captured_kwargs["preview_chars"] == 321
+
+
+@pytest.mark.asyncio
 async def test_fetch_dispatches_to_http_request() -> None:
     from hawker_agent.tools import http_tools as http_tools_module
 
@@ -320,7 +394,7 @@ def test_save_result_json_persists_artifact(tmp_path: Path) -> None:
         tmp_path,
         [{"id": 1}],
         "done",
-        final_artifact={"type": "markdown", "content": "# done"},
+        final_artifact={"type": "text", "content": "# done"},
     )
 
     data = json_mod.loads(result_path.read_text(encoding="utf-8"))
@@ -641,7 +715,7 @@ class TestHttpRequestACI:
         body = "A" * 25_000
         _patch_http_client(monkeypatch, _StubDomainResponse(200, body, content_type="text/plain"))
 
-        raw = await http_request("https://example.com/data", max_chars=1_000)
+        raw = await http_request("https://example.com/data", preview_chars=1_000)
 
         assert raw.startswith("[200]\n")
         status, parsed_body = parse_http_response(raw)

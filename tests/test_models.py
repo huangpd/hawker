@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import dataclasses
-import json
 import time
 
 import pytest
@@ -24,8 +23,8 @@ from hawker_agent.models.result import CodeAgentResult
 from hawker_agent.models.state import CodeAgentState, TokenStats
 from hawker_agent.models.step import CodeAgentStepMetadata
 from hawker_agent.agent.final_delivery import (
-    recover_items_from_final_answer,
     replace_state_items,
+    resolve_final_items,
 )
 from hawker_agent.agent.runner import _build_namespace_skip_names
 from hawker_agent.agent.evaluator import build_final_evaluation_messages
@@ -199,23 +198,25 @@ class TestCodeAgentState:
         state = CodeAgentState()
         assert state.checkpoint_files == set()
 
-    def test_recover_items_from_final_answer_list(self) -> None:
-        payload = json.dumps([{"id": 1, "title": "A"}, {"id": 2, "title": "B"}], ensure_ascii=False)
-        items = recover_items_from_final_answer(payload)
-        assert len(items) == 2
-        assert items[0]["id"] == 1
-
-    def test_recover_items_from_final_answer_items_wrapper(self) -> None:
-        payload = json.dumps({"items": [{"url": "https://a"}, {"url": "https://b"}]}, ensure_ascii=False)
-        items = recover_items_from_final_answer(payload)
-        assert len(items) == 2
-        assert items[1]["url"] == "https://b"
-
     def test_replace_state_items_overwrites_runtime_items(self) -> None:
         state = CodeAgentState()
         state.items.append([{"title": "stale"}, {"title": "old"}])
         replace_state_items(state, [{"title": "new-a"}, {"title": "new-b"}])
         assert state.items.to_list() == [{"title": "new-a"}, {"title": "new-b"}]
+
+    def test_resolve_final_items_prefers_artifact_items(self) -> None:
+        items = resolve_final_items(
+            final_artifact={"type": "json", "items": [{"title": "A"}]},
+            fallback_items=[{"title": "stale"}],
+        )
+        assert items == [{"title": "A"}]
+
+    def test_resolve_final_items_falls_back_to_existing_items(self) -> None:
+        items = resolve_final_items(
+            final_artifact={"type": "text", "content": "完成"},
+            fallback_items=[{"title": "stale"}],
+        )
+        assert items == [{"title": "stale"}]
 
     def test_build_namespace_skip_names_uses_system_keys(self) -> None:
         namespace = HawkerNamespace({"nav": object(), "fetch": object(), "json": object()}, "/tmp/run")

@@ -69,19 +69,84 @@ uv sync
 uv run playwright install chromium
 ```
 
+For end users who only want the CLI, the intended install path is:
+
+```bash
+pipx install hawker-agent
+# or
+uv tool install hawker-agent
+playwright install chromium
+```
+
 ### 2. Configure environment
 
 ```bash
+hawker config init
+# or, from a source checkout:
 cp .env.example .env
+```
+
+By default, `hawker config init` starts an interactive setup wizard and writes
+global CLI configuration to:
+
+- `~/hawker/config.env`
+
+For scripts or CI, skip the wizard and write a template:
+
+```bash
+hawker config init --no-interactive
+```
+
+Change individual values without opening the file:
+
+```bash
+hawker config set api-key
+hawker config set model openai/gpt-5.4
+hawker config set max-steps 20
+```
+
+Open the active config in your editor:
+
+```bash
+hawker config edit
 ```
 
 Typical settings:
 
 ```ini
 OPENAI_API_KEY=...
-MODEL_NAME=gemini/gemini-2.0-flash-thinking-preview-01-21
+MODEL_NAME=openai/gpt-5.4
 HEADLESS=false
 ```
+
+Inspect the effective configuration:
+
+```bash
+hawker config show
+hawker doctor
+```
+
+Configuration precedence:
+
+1. CLI flags
+2. OS environment variables
+3. `~/hawker/config.env`
+4. Built-in defaults
+
+Important configuration groups:
+
+| Group | Variables |
+| --- | --- |
+| LLM | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `MODEL_NAME`, `SMALL_MODEL_NAME`, `REASONING_EFFORT` |
+| Runtime | `MAX_STEPS`, `MAX_TOTAL_TOKENS`, `MAX_NO_PROGRESS_STEPS`, `MESSAGE_COMPRESSION_TOKENS` |
+| Sidecars | `HEALER_ENABLED`, `FINAL_EVALUATOR_ENABLED`, `OBSERVER_ENABLED` |
+| Browser | `HEADLESS`, `BROWSER_EXECUTABLE_PATH`, `BROWSER_USER_DATA_DIR`, `BROWSER_STORAGE_STATE`, `BROWSER_CDP_URL` |
+| Storage & logs | `SCRAPE_DIR`, `KNOWLEDGE_DB_PATH`, `LOG_LEVEL` |
+
+Default storage paths now follow a simple user-home layout rather than the current working directory:
+
+- `SCRAPE_DIR`: `~/hawker`
+- `KNOWLEDGE_DB_PATH`: `~/hawker/knowledge.db`
 
 If your target site requires authentication, Hawker can reuse browser state via:
 
@@ -103,6 +168,22 @@ CLI mode:
 
 ```bash
 uv run python -m hawker_agent.cli "Collect GitHub Trending repositories" --max-steps 15
+```
+
+Packaged CLI mode:
+
+```bash
+hawker "Collect GitHub Trending repositories" --max-steps 15
+hawker run "Collect GitHub Trending repositories" --max-steps 15
+```
+
+### 4. Smoke-check a packaged install
+
+These are the minimum checks worth running before publishing:
+
+```bash
+hawker --help
+hawker run "Collect one GitHub Trending repository" --max-steps 1
 ```
 
 ## Usage Model
@@ -137,6 +218,7 @@ Common commands:
 uv run ruff check hawker_agent tests run.py
 uv run mypy hawker_agent
 uv run pytest -q
+uv run python -m build
 ```
 
 The repository currently uses:
@@ -144,6 +226,43 @@ The repository currently uses:
 - `ruff` for linting
 - `mypy` in strict mode
 - `pytest` and `pytest-asyncio` for tests
+
+## Packaging & Release
+
+Recommended release flow:
+
+1. Build artifacts locally
+2. Validate the wheel in a clean environment
+3. Publish to TestPyPI
+4. Install from TestPyPI and run the CLI smoke checks
+5. Publish to PyPI
+
+Build locally:
+
+```bash
+uv sync --extra dev
+uv run python -m build
+```
+
+Typical TestPyPI publish:
+
+```bash
+uv run python -m twine upload --repository testpypi dist/*
+```
+
+Typical PyPI publish:
+
+```bash
+uv run python -m twine upload dist/*
+```
+
+For a one-command local release check:
+
+```bash
+bash scripts/release_check.sh
+```
+
+See [document/release_process.md](./document/release_process.md) for the fuller TestPyPI and PyPI checklist.
 
 ## Security
 

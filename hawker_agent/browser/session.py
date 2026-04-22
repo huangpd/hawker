@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import platform
 from pathlib import Path
 
 from browser_use.browser.profile import BrowserProfile
@@ -9,6 +11,50 @@ from browser_use.browser.session import BrowserSession as _UpstreamBrowserSessio
 from hawker_agent.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+def _is_linux_server_without_display() -> bool:
+    """Detect common server environments where headed Chromium will hang on launch."""
+    if platform.system() != "Linux":
+        return False
+    return not any(os.environ.get(name) for name in ("DISPLAY", "WAYLAND_DISPLAY"))
+
+
+def _is_root_user() -> bool:
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is None:
+        return False
+    try:
+        return geteuid() == 0
+    except OSError:
+        return False
+
+
+def _server_browser_overrides() -> dict[str, object]:
+    """Return Linux server-friendly browser launch defaults.
+
+    These defaults make local Chromium launches much more reliable on:
+    - headless Linux servers without X11/Wayland
+    - containers / root users where Chromium sandbox often fails
+    """
+    overrides: dict[str, object] = {}
+    extra_args = [
+        "--disable-dev-shm-usage",
+        "--no-first-run",
+        "--no-default-browser-check",
+    ]
+
+    if _is_linux_server_without_display():
+        overrides["headless"] = True
+
+    if _is_root_user():
+        overrides["chromium_sandbox"] = False
+        extra_args.append("--no-sandbox")
+
+    if extra_args:
+        overrides["args"] = extra_args
+
+    return overrides
 
 
 class BrowserSession:
@@ -41,6 +87,7 @@ class BrowserSession:
             # 显式下载由 curl-cffi 完成，关闭 browser-use 的 PDF 自动下载避免竞争。
             "auto_download_pdfs": False,
         }
+        self._browser_profile_kwargs.update(_server_browser_overrides())
         self._session: _UpstreamBrowserSession | None = None
         self.target_dir: Path | None = None  # 本次任务产物的最终保存目录
         # 内部状态
@@ -61,8 +108,12 @@ class BrowserSession:
         profile = BrowserProfile(**profile_kwargs)
         self._session = _UpstreamBrowserSession(browser_profile=profile)
         await self._session.start()
-        
-        logger.info("浏览器会话已启动 (headless=%s)", self._headless)
+
+        logger.info(
+            "浏览器会话已启动 (headless=%s, chromium_sandbox=%s)",
+            profile_kwargs.get("headless"),
+            profile_kwargs.get("chromium_sandbox", True),
+        )
         return self
 
     async def __aexit__(

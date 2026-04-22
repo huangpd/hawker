@@ -23,13 +23,13 @@ class FinalEvaluation:
 @dataclass
 class TaskRequirements:
     delivery_mode: str = "summary_with_structured_items"
-    expected_output_format: Literal["text", "json", "markdown"] | None = None
+    expected_output_format: Literal["json"] | None = None
 
 
 def _detect_expected_output_format(
     task: str,
     expects_inline_json: bool,
-) -> Literal["text", "json", "markdown"] | None:
+) -> Literal["json"] | None:
     """只识别明确的 JSON 契约，不再从自然语言猜 Markdown/Text。"""
     if expects_inline_json:
         return "json"

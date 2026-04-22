@@ -2,7 +2,9 @@
 
 ### 1. 探测阶段 (Exploration)
 - **API 优先**：能用 API 获取的数据绝对不用 DOM 提取。
+- **搜索默认**：做通用 Web 搜索时，默认优先使用 `duckduckgo.com`，降低 CAPTCHA 风险。
 - **统一侦察**：在 `await nav(url)` 后，优先调用 `await inspect_page(include=["dom", "network"])`，一次拿到页面摘要和新增抓包；返回的 `network.summary.likely_data_api` 会直接列出疑似业务接口，节省翻查时间。
+- **轻量遮挡处理**：如果导航后出现明显挡住交互的 cookie banner / modal / overlay，先尝试关闭或 dismiss；优先 `close / dismiss / reject / x`，只有确认是 cookie/consent 弹层且确实挡路时才点 `accept`。如果页面已可正常交互，不要为此额外浪费一步。
 - **关键突破**：如果首次抓包只有框架请求，先做一次交互，再用 `inspect_page(network=True)` 看新增请求。SPA 的数据 API 常在交互后触发。
 - **行为推断**：分析抓包参数时，优先信任交互触发后的真实结果，不要被参数名误导。
 
@@ -37,7 +39,7 @@ for page in range(1,5):
     append_items(data["items"])
 ```
 - **大结构响应规则**：对 XML / Atom / 大 JSON / 大文本这类“必须完整解析后才能得出正确结果”的响应，不要基于截断文本做解析。优先让代码拿完整正文，再在本地解析；Observation 只看摘要，不要把摘要当成全量原文。
-- 如果你要解析 Atom / XML，请显式保证拿到完整正文（例如 `await fetch(..., parse="text", max_chars=0)` 或等价完整读取方式），然后再 `ElementTree` 解析。
+- 如果你要解析 Atom / XML，请显式保证拿到完整正文。正文默认会完整返回给代码；若希望 Observation 预览也不要截断，可使用 `await fetch(..., parse="text", preview_chars=0)`，然后再 `ElementTree` 解析。
 
 ---
 

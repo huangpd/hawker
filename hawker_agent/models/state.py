@@ -96,7 +96,7 @@ class CodeAgentState:
     final_answer_requested: str | None = None
     final_artifact_requested: dict[str, Any] | None = None
     final_artifact: dict[str, Any] | None = None
-    expected_output_format: Literal["text", "json", "markdown"] | None = None
+    expected_output_format: Literal["json"] | None = None
 
     # 数据采集
     items: ItemStore = field(default_factory=ItemStore)

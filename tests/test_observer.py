@@ -126,6 +126,18 @@ def test_infer_observer_domain_prefers_task_then_cells() -> None:
     assert infer_observer_domain("任务里没域名", cells) == "openreview.net"
 
 
+def test_infer_observer_domain_reads_url_from_success_code() -> None:
+    cells = [
+        _cell(
+            step=1,
+            status=CellStatus.SUCCESS,
+            source='page = await nav("https://github.com/trending", mode="summary")',
+            output="ok",
+        )
+    ]
+    assert infer_observer_domain("抓取 GitHub Trending 前 10 个仓库", cells) == "github.com"
+
+
 def test_validate_browser_harness_style_sop_accepts_valid_markdown() -> None:
     markdown = """# arxiv.org — Scraping & Data Extraction
 

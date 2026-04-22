@@ -41,7 +41,7 @@ def _check_imports(code: str) -> str | None:
     """
     try:
         tree = ast.parse(code)
-    except SyntaxError:
+    except (SyntaxError, ValueError, TypeError, SystemError):
         return None  # 让 compile() 稍后报告真正的错误
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):

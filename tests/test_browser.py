@@ -57,6 +57,28 @@ class TestNetlogJS:
 
 
 class TestBrowserSession:
+    def test_server_overrides_force_headless_without_display(self) -> None:
+        with patch("hawker_agent.browser.session.get_settings") as mock_settings, \
+             patch("hawker_agent.browser.session._is_linux_server_without_display", return_value=True), \
+             patch("hawker_agent.browser.session._is_root_user", return_value=False):
+            mock_settings.return_value = MagicMock(headless=False)
+            from hawker_agent.browser.session import BrowserSession
+
+            session = BrowserSession()
+            assert session._browser_profile_kwargs["headless"] is True
+            assert "--disable-dev-shm-usage" in session._browser_profile_kwargs["args"]
+
+    def test_server_overrides_disable_sandbox_for_root(self) -> None:
+        with patch("hawker_agent.browser.session.get_settings") as mock_settings, \
+             patch("hawker_agent.browser.session._is_linux_server_without_display", return_value=False), \
+             patch("hawker_agent.browser.session._is_root_user", return_value=True):
+            mock_settings.return_value = MagicMock(headless=True)
+            from hawker_agent.browser.session import BrowserSession
+
+            session = BrowserSession()
+            assert session._browser_profile_kwargs["chromium_sandbox"] is False
+            assert "--no-sandbox" in session._browser_profile_kwargs["args"]
+
     def test_raw_raises_before_start(self) -> None:
         with patch("hawker_agent.browser.session.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(headless=True)
@@ -92,7 +114,8 @@ class TestBrowserSession:
             assert session._headless is True
 
     def test_browser_profile_options_from_settings(self) -> None:
-        with patch("hawker_agent.browser.session.get_settings") as mock_settings:
+        with patch("hawker_agent.browser.session.get_settings") as mock_settings, \
+             patch("hawker_agent.browser.session._server_browser_overrides", return_value={}):
             mock_settings.return_value = MagicMock(
                 headless=False,
                 browser_executable_path=Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
@@ -134,6 +157,7 @@ class TestBrowserSession:
     @pytest.mark.asyncio
     async def test_aenter_passes_browser_profile_options(self) -> None:
         with patch("hawker_agent.browser.session.get_settings") as mock_settings, \
+             patch("hawker_agent.browser.session._server_browser_overrides", return_value={}), \
              patch("hawker_agent.browser.session.BrowserProfile") as mock_profile_cls, \
              patch("hawker_agent.browser.session._UpstreamBrowserSession") as mock_session_cls:
             mock_settings.return_value = MagicMock(

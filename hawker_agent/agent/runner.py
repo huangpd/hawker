@@ -5,8 +5,9 @@ import time
 from pathlib import Path
 from typing import Literal
 
-from hawker_agent.agent.artifact import normalize_final_artifact, recover_items_from_artifact
+from hawker_agent.agent.artifact import normalize_final_artifact
 from hawker_agent.agent.evaluator import extract_task_requirements
+from hawker_agent.agent.final_delivery import resolve_final_items
 from hawker_agent.agent.namespace import HawkerNamespace, build_namespace
 from hawker_agent.agent.prompts import build_system_prompt
 from hawker_agent.agent.step_runtime import run_agent_step
@@ -140,15 +141,18 @@ def _build_result(
         )
         state.final_artifact = final_artifact
 
-    if not state.items and final_artifact:
-        recovered_items = recover_items_from_artifact(final_artifact)
-        if recovered_items:
-            added, skipped = state.items.append(recovered_items)
-            logger.warning(
-                "final_answer artifact 未显式 append_items，已自动回填 %d 条数据 (skipped=%d)",
-                added,
-                skipped,
-            )
+    export_items = resolve_final_items(
+        final_artifact=final_artifact,
+        fallback_items=state.items.to_list(),
+    )
+    if export_items and export_items != state.items.to_list():
+        logger.info(
+            "导出前按最终交付收敛 items：runtime=%d -> export=%d",
+            len(state.items),
+            len(export_items),
+        )
+        state.items.clear()
+        state.items.append(export_items)
 
     # 结果恢复逻辑（当任务非正常结束时生成总结）
     if stop_reason != "done" and not final_answer:
@@ -189,7 +193,7 @@ def _build_result(
     nb_path = export_notebook(cells, task, state.run_dir)
     json_path = save_result_json(
         state.run_dir,
-        state.items.to_list(),
+        export_items or state.items.to_list(),
         final_answer,
         final_artifact=final_artifact,
         checkpoint_files=state.checkpoint_files,
@@ -206,7 +210,7 @@ def _build_result(
         answer=final_answer,
         success=stop_reason == "done",
         artifact=final_artifact,
-        items=state.items.to_list(),
+        items=export_items or state.items.to_list(),
         run_id=state.run_id,
         model_name=model_name,
         total_steps=total_steps,

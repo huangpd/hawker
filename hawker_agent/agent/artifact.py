@@ -5,12 +5,12 @@ from typing import Any, Literal
 
 from hawker_agent.tools.data_tools import normalize_items
 
-_EXPLICIT_ARTIFACT_TYPES = {"text", "json", "markdown"}
+_EXPLICIT_ARTIFACT_TYPES = {"text", "json"}
 
 
 def normalize_final_artifact(
     answer: object,
-    expected_output_format: Literal["text", "json", "markdown"] | None = None,
+    expected_output_format: Literal["json"] | None = None,
 ) -> dict[str, Any]:
     """将 final_answer 输入规范化为统一 artifact 结构。"""
     if isinstance(answer, str):
@@ -142,37 +142,24 @@ def _finalize_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
 
 def _apply_expected_output_format(
     artifact: dict[str, Any],
-    expected_output_format: Literal["text", "json", "markdown"] | None,
+    expected_output_format: Literal["json"] | None,
 ) -> dict[str, Any]:
-    """按任务要求做最小化格式对齐，不改写正文内容。"""
-    if not expected_output_format:
+    """Applies the only remaining output contract: explicit JSON."""
+    if expected_output_format != "json":
         return artifact
 
     normalized = dict(artifact)
     artifact_type = str(normalized.get("type") or "").strip().lower()
     content = normalized.get("content")
 
-    if expected_output_format == "markdown":
-        if artifact_type == "text" and isinstance(content, str):
-            normalized["type"] = "markdown"
+    if artifact_type == "json":
         return normalized
-
-    if expected_output_format == "text":
-        if artifact_type == "markdown":
-            normalized["type"] = "text"
-        return normalized
-
-    if expected_output_format == "json":
-        if artifact_type == "json":
-            return normalized
-        if isinstance(content, str):
-            stripped = content.strip()
-            if stripped[:1] in "[{":
-                try:
-                    parsed = json.loads(stripped)
-                except Exception:
-                    return normalized
-                return _finalize_artifact(_artifact_from_structured(parsed))
-        return normalized
-
+    if isinstance(content, str):
+        stripped = content.strip()
+        if stripped[:1] in "[{":
+            try:
+                parsed = json.loads(stripped)
+            except Exception:
+                return normalized
+            return _finalize_artifact(_artifact_from_structured(parsed))
     return normalized

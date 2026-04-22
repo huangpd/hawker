@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -308,18 +309,33 @@ def register_browser_tools(
         if not payload:
             return {"summary": "未请求任何页面状态"}
         return payload
-    async def js(code: str) -> Any:
+    async def js(code: str, *fn_args: object, args: list[Any] | tuple[Any, ...] | None = None) -> Any:
         """在当前页面执行 JavaScript,返回值会自动转换为 Python 类型（如 JS 的 Array 变为 Python List）,无需在 JS 中使用 JSON.stringify
         
         注意：
         1. 必须使用 `await js(...)` 调用。
         2. 返回值会自动转换为 Python 类型（如 JS 的 Array 变为 Python List）。
         3. 直接返回所需数据即可，无需在 JS 中使用 JSON.stringify。
+        4. 兼容 ``js(function_code, arg1, arg2)`` 和 ``js(function_code, args=[...])`` 两种调用形式。
         
         用法示例:
             items = await js("Array.from(document.querySelectorAll('a')).map(a => a.href)")
         """
-        return await actions.js(session, code)
+        call_args = list(args) if args is not None else list(fn_args)
+        if not call_args:
+            return await actions.js(session, code)
+
+        wrapped_code = (
+            "(() => {\n"
+            f"  const __hawker_args = {json.dumps(call_args, ensure_ascii=False)};\n"
+            f"  const __hawker_fn = ({code});\n"
+            "  if (typeof __hawker_fn !== 'function') {\n"
+            "    throw new TypeError('js(code, args=...) requires `code` to evaluate to a function');\n"
+            "  }\n"
+            "  return __hawker_fn(...__hawker_args);\n"
+            "})()"
+        )
+        return await actions.js(session, wrapped_code)
 
     async def click(selector: str, index: int = 0, mode: str = "auto") -> str:
         """点击元素并返回摘要字符串；页面变化上下文会写入下一轮 DOM Workspace。"""

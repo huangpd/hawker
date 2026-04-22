@@ -1,3 +1,11 @@
+"""Observer pipeline for distilling successful runs into site SOPs.
+
+This module turns a finished task run into a compact, reusable site-specific SOP
+document. It gathers execution evidence, selects few-shot examples, prompts the
+observer model, validates the generated markdown, and persists the result to the
+knowledge store.
+"""
+
 from __future__ import annotations
 
 import json
@@ -24,6 +32,15 @@ _EXAMPLE_DIR = Path(__file__).parent.parent / "templates" / "observer_examples"
 
 @dataclass
 class ObserverEvidence:
+    """Structured evidence bundle used for SOP generation.
+
+    Attributes:
+        domain: Canonical target domain inferred from the task or executed code.
+        execution_log: Condensed step history showing successful and failed cells.
+        network_summary: Compact summary of relevant network traffic.
+        source_url: Best-effort source URL extracted from the run.
+    """
+
     domain: str
     execution_log: str
     network_summary: str
@@ -32,23 +49,43 @@ class ObserverEvidence:
 
 @dataclass
 class SOPValidationResult:
+    """Validation result for a generated SOP document.
+
+    Attributes:
+        ok: Whether the candidate SOP passes the validation checks.
+        reason: Human-readable rejection reason when ``ok`` is ``False``.
+    """
+
     ok: bool
     reason: str = ""
 
 
 @dataclass(frozen=True)
 class ObserverExample:
+    """Few-shot example used to steer observer generation.
+
+    Attributes:
+        key: Stable example identifier.
+        title: Human-readable example title.
+        content: Full markdown body injected into the observer prompt.
+    """
+
     key: str
     title: str
     content: str
 
 
 def _today_text() -> str:
+    """Returns today's date string in Beijing time."""
     return datetime.now(_BEIJING_TZ).strftime("%Y-%m-%d")
 
 
 def load_observer_examples() -> dict[str, ObserverExample]:
-    """加载内置 few-shot 案例库。"""
+    """Loads built-in few-shot examples from the template directory.
+
+    Returns:
+        A mapping from example key to parsed :class:`ObserverExample`.
+    """
     examples: dict[str, ObserverExample] = {}
     file_map = {
         "api_only": "api_only.md",
@@ -64,7 +101,18 @@ def load_observer_examples() -> dict[str, ObserverExample]:
 
 
 def classify_observer_evidence(execution_log: str, network_summary: str) -> str:
-    """根据主 Agent 证据判断更适合的 few-shot 类型。"""
+    """Classifies the run into a coarse evidence type.
+
+    The classifier is intentionally heuristic and low-cost. It only needs to
+    choose a suitable few-shot neighborhood, not a perfect workflow label.
+
+    Args:
+        execution_log: Condensed code execution history.
+        network_summary: Condensed network traffic summary.
+
+    Returns:
+        One of ``"api_only"``, ``"hybrid"``, or ``"browser_required"``.
+    """
     exec_lower = execution_log.lower()
     net_lower = network_summary.lower()
 
@@ -89,7 +137,16 @@ def classify_observer_evidence(execution_log: str, network_summary: str) -> str:
 
 
 def select_observer_examples(execution_log: str, network_summary: str, *, max_examples: int = 2) -> list[ObserverExample]:
-    """按证据类型选择 few-shot 参考案例。"""
+    """Selects the most relevant few-shot examples for the observer prompt.
+
+    Args:
+        execution_log: Condensed code execution history.
+        network_summary: Condensed network traffic summary.
+        max_examples: Maximum number of examples to return.
+
+    Returns:
+        Ordered few-shot examples, starting from the best evidence-type match.
+    """
     examples = load_observer_examples()
     primary_key = classify_observer_evidence(execution_log, network_summary)
     order = [primary_key]
@@ -100,14 +157,34 @@ def select_observer_examples(execution_log: str, network_summary: str, *, max_ex
 
 
 def _extract_source_url(cells: list[CodeCell]) -> str:
+    """Extracts the best-effort source URL from executed cells.
+
+    Args:
+        cells: Executed code cells in chronological order.
+
+    Returns:
+        The most recent explicit cell URL, or the first URL found in source
+        code, or an empty string if none can be inferred.
+    """
     for cell in reversed(cells):
         if cell.url:
             return cell.url
+        urls = extract_urls(cell.source)
+        if urls:
+            return urls[0]
     return ""
 
 
 def infer_observer_domain(task: str, cells: list[CodeCell]) -> str:
-    """尽可能早地从 task / cells 推断目标域名。"""
+    """Infers the target domain for observer distillation.
+
+    Args:
+        task: Original user task.
+        cells: Executed code cells.
+
+    Returns:
+        The first inferred domain, or an empty string if no domain can be found.
+    """
     domains = extract_site_keys(task)
     if domains:
         return domains[0]
@@ -117,6 +194,7 @@ def infer_observer_domain(task: str, cells: list[CodeCell]) -> str:
 
 
 def _format_cell(cell: CodeCell) -> str:
+    """Formats a single code cell into a compact observer-facing block."""
     parts = [f"Step {cell.step} | status={cell.status.value} | items={cell.items_count}"]
     if cell.thought.strip():
         parts.append(f"Thought: {cell.thought.strip()[:240]}")
@@ -130,7 +208,16 @@ def _format_cell(cell: CodeCell) -> str:
 
 
 def build_execution_log(cells: list[CodeCell], items: list[dict[str, Any]], *, max_cells: int = 4) -> str:
-    """从成功路径和关键失败构建紧凑执行日志。"""
+    """Builds a compact execution log for observer prompting.
+
+    Args:
+        cells: Executed code cells.
+        items: Structured items collected during the run.
+        max_cells: Maximum number of successful cells to include.
+
+    Returns:
+        A condensed markdown-like execution trace suitable for prompt injection.
+    """
     successful = [cell for cell in cells if cell.status == CellStatus.SUCCESS and cell.source.strip()]
     failed = [
         cell for cell in cells
@@ -153,7 +240,15 @@ def build_execution_log(cells: list[CodeCell], items: list[dict[str, Any]], *, m
 
 
 def build_network_summary(netlog_result: dict[str, Any]) -> str:
-    """从 netlog 结果构建适合 SOP 蒸馏的摘要。"""
+    """Builds a prompt-friendly summary from raw network log output.
+
+    Args:
+        netlog_result: Raw network log payload returned by browser actions.
+
+    Returns:
+        A compact multiline summary emphasizing request method, URL, status,
+        content type, and short body samples.
+    """
     entries = list(netlog_result.get("entries") or [])
     if not entries:
         return "No useful network evidence."
@@ -184,7 +279,15 @@ def build_network_summary(netlog_result: dict[str, Any]) -> str:
 
 
 def extract_requested_fields(task: str) -> list[str]:
-    """从任务文本中提取显式要求的字段名。"""
+    """Extracts explicitly requested fields from the task text.
+
+    Args:
+        task: Original user task.
+
+    Returns:
+        Field names found in bullet-like ``- field: ...`` patterns, preserving
+        first-seen order and removing case-insensitive duplicates.
+    """
     fields: list[str] = []
     seen: set[str] = set()
     for match in re.finditer(r"[-•]\s*([A-Za-z_][A-Za-z0-9_]*)\s*[:：]", task):
@@ -197,7 +300,15 @@ def extract_requested_fields(task: str) -> list[str]:
 
 
 def infer_page_pattern(task: str, source_url: str) -> str:
-    """根据 task/source_url 推断页面路径模式。"""
+    """Infers a normalized page pattern from task text or source URL.
+
+    Args:
+        task: Original user task.
+        source_url: Best-effort URL extracted from the run.
+
+    Returns:
+        A normalized page pattern string suitable for SOP matching.
+    """
     urls = extract_urls(task)
     if urls:
         return normalize_page_pattern(urls[0])
@@ -205,7 +316,17 @@ def infer_page_pattern(task: str, source_url: str) -> str:
 
 
 def infer_should_inspect_first(workflow_kind: str, page_pattern: str, execution_log: str) -> bool:
-    """判断命中 SOP 后是否仍需先侦察。"""
+    """Determines whether execution should inspect before extraction.
+
+    Args:
+        workflow_kind: Coarse workflow classification.
+        page_pattern: Normalized page pattern for the run.
+        execution_log: Condensed code execution history.
+
+    Returns:
+        ``True`` when a future run should still inspect first, ``False`` when a
+        known direct path appears reliable enough to skip initial reconnaissance.
+    """
     log_lower = execution_log.lower()
     if workflow_kind == "api_only":
         return False
@@ -217,6 +338,15 @@ def infer_should_inspect_first(workflow_kind: str, page_pattern: str, execution_
 
 
 def infer_preferred_entry(workflow_kind: str, page_pattern: str) -> str:
+    """Infers a preferred entry strategy for future executions.
+
+    Args:
+        workflow_kind: Coarse workflow classification.
+        page_pattern: Normalized page pattern for the run.
+
+    Returns:
+        A short strategy label injected into the stored SOP metadata.
+    """
     if workflow_kind == "api_only":
         return "api_direct"
     if page_pattern == "/trending":
@@ -227,7 +357,14 @@ def infer_preferred_entry(workflow_kind: str, page_pattern: str) -> str:
 
 
 def extract_golden_rule(markdown: str) -> str:
-    """从 SOP Markdown 中抽取 Golden Rule。"""
+    """Extracts the golden rule line from SOP markdown.
+
+    Args:
+        markdown: Generated SOP markdown.
+
+    Returns:
+        The extracted golden rule, or a conservative default rule if missing.
+    """
     bold_match = re.search(r"\*\*Golden Rule:\*\*\s*(.+)", markdown)
     if bold_match:
         return bold_match.group(1).strip()
@@ -238,12 +375,14 @@ def extract_golden_rule(markdown: str) -> str:
 
 
 def _extract_section(markdown: str, heading: str) -> str:
+    """Extracts the body of a level-2 markdown section."""
     pattern = rf"{re.escape(heading)}\n(.*?)(?=\n## |\Z)"
     match = re.search(pattern, markdown, re.S)
     return match.group(1).strip() if match else ""
 
 
 def _is_placeholder_api_reference(section_text: str) -> bool:
+    """Checks whether an API reference section is only placeholder text."""
     lowered = section_text.lower().strip()
     if not lowered:
         return True
@@ -257,6 +396,16 @@ def _is_placeholder_api_reference(section_text: str) -> bool:
 
 
 def _merge_bullets(old_text: str, new_text: str, *, limit: int = 8) -> str:
+    """Merges unique bullet lines from new and old sections.
+
+    Args:
+        old_text: Existing stored section body.
+        new_text: Newly generated section body.
+        limit: Maximum number of merged bullet lines to keep.
+
+    Returns:
+        A newline-separated bullet list with duplicates removed.
+    """
     lines: list[str] = []
     seen: set[str] = set()
     for block in (new_text, old_text):
@@ -275,7 +424,19 @@ def _merge_bullets(old_text: str, new_text: str, *, limit: int = 8) -> str:
 
 
 def smart_merge_sop(existing_markdown: str, candidate_markdown: str) -> str:
-    """对新旧 SOP 做最小智能合并，避免无限追加和空占位回退。"""
+    """Performs a minimal merge between existing and candidate SOP markdown.
+
+    The merge intentionally stays conservative. It only preserves stronger
+    reference sections and merges gotcha bullets to avoid endless appendix
+    growth or regression to placeholder content.
+
+    Args:
+        existing_markdown: Currently stored SOP markdown.
+        candidate_markdown: Newly generated SOP markdown.
+
+    Returns:
+        The merged SOP markdown.
+    """
     if not existing_markdown.strip():
         return candidate_markdown.strip()
 
@@ -306,7 +467,15 @@ def smart_merge_sop(existing_markdown: str, candidate_markdown: str) -> str:
 
 
 def validate_browser_harness_style_sop(markdown: str, domain: str) -> SOPValidationResult:
-    """校验 SOP 是否符合 browser-harness 风格的最小录入标准。"""
+    """Validates a generated SOP against the minimum storage contract.
+
+    Args:
+        markdown: Candidate SOP markdown.
+        domain: Expected target domain used in the title.
+
+    Returns:
+        A :class:`SOPValidationResult` describing whether the SOP is acceptable.
+    """
     stripped = markdown.strip()
     expected_title = f"# {domain} — Scraping & Data Extraction"
     if not stripped.startswith(expected_title):
@@ -366,11 +535,24 @@ async def collect_observer_evidence(
     items: list[dict[str, Any]],
     browser: BrowserSession,
 ) -> ObserverEvidence | None:
+    """Collects evidence required for observer generation.
+
+    Args:
+        task: Original user task.
+        cells: Executed code cells.
+        items: Structured items collected during the run.
+        browser: Active browser session for network log collection.
+
+    Returns:
+        An :class:`ObserverEvidence` bundle, or ``None`` when no target domain
+        can be inferred.
+    """
     domains = extract_site_keys(task)
     if not domains:
         source_url = _extract_source_url(cells)
         domains = extract_site_keys(source_url) if source_url else []
     if not domains:
+        logger.info("Observer 未能从任务或成功代码中推断站点域名，已跳过 SOP 生成")
         return None
 
     source_url = _extract_source_url(cells)
@@ -402,7 +584,20 @@ async def maybe_generate_and_store_site_sop(
     sop_store: SiteSOPStore,
     cfg: Settings,
 ) -> SiteSOP | None:
-    """在任务成功后生成并写入站点 SOP。"""
+    """Generates and stores a site SOP after a successful task run.
+
+    Args:
+        task: Original user task.
+        state: Mutable run state.
+        cells: Executed code cells.
+        browser: Active browser session.
+        sop_store: SOP persistence layer.
+        cfg: Runtime settings.
+
+    Returns:
+        The stored :class:`SiteSOP` on success, otherwise ``None`` when SOP
+        generation is skipped, rejected, or fails.
+    """
     if not cfg.model_name:
         return None
     if not state.done:

@@ -5,10 +5,29 @@ import uuid
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import parse_qsl, urlsplit, urlunsplit, urlencode
 from typing import Any, Literal
 
 from hawker_agent.models.item import ItemStore
 from hawker_agent.observability import LogContext, bind_log_context, generate_trace_id
+
+
+_DOWNLOAD_QUERY_NOISE_KEYS = {
+    "_",
+    "cache",
+    "cache_bust",
+    "cachebuster",
+    "download",
+    "expires",
+    "fbclid",
+    "gclid",
+    "ref",
+    "source",
+    "spm",
+    "timestamp",
+    "token",
+    "ts",
+}
 
 
 @dataclass
@@ -77,6 +96,7 @@ class CodeAgentState:
         pending_dom (str | None): 下一轮模型交互待注入的 DOM 状态文本。
         last_dom_snapshot (dict[str, Any] | None): 最近一次页面的结构化快照。
         llm_records (list[dict[str, Any]]): 详细的模型交互过程记录。
+        download_registry (dict[str, dict[str, Any]]): 当前运行的已下载资源注册表。
         token_stats (TokenStats): 当前运行的 token 统计信息。
         activity_marker (int): 基础活跃度计数器，用于追踪采集项的变动。
         progress_marker (int): 实质进展计数器，反映任务目标的推进。
@@ -105,6 +125,7 @@ class CodeAgentState:
     llm_records: list[dict[str, Any]] = field(default_factory=list)
     healing_records: list[dict[str, Any]] = field(default_factory=list)
     evaluator_records: list[dict[str, Any]] = field(default_factory=list)
+    download_registry: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     # Token 预算
     token_stats: TokenStats = field(default_factory=TokenStats)
@@ -154,6 +175,76 @@ class CodeAgentState:
             bool: 是否超限。
         """
         return self.token_stats.is_over_budget(limit)
+
+    @staticmethod
+    def _normalize_download_url(url: str) -> str:
+        """将下载 URL 规范化为稳定的注册表键。"""
+        parsed = urlsplit(url.strip())
+        scheme = parsed.scheme.lower()
+        hostname = (parsed.hostname or "").lower()
+        username = parsed.username or ""
+        password = parsed.password or ""
+        auth = username
+        if password:
+            auth = f"{auth}:{password}" if auth else f":{password}"
+        if auth:
+            hostname = f"{auth}@{hostname}" if hostname else auth
+        port = parsed.port
+        if port and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
+            netloc = f"{hostname}:{port}" if hostname else f":{port}"
+        else:
+            netloc = hostname or parsed.netloc.lower()
+        filtered_query_items = []
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+            key_lower = key.lower()
+            if key_lower in _DOWNLOAD_QUERY_NOISE_KEYS:
+                continue
+            if key_lower.startswith("utm_") or key_lower.startswith("x-amz-"):
+                continue
+            filtered_query_items.append((key, value))
+        query = urlencode(sorted(filtered_query_items))
+        return urlunsplit((scheme, netloc, parsed.path or "", query, ""))
+
+    def get_download_record(self, url: str) -> dict[str, Any] | None:
+        """按 URL 查找已注册的下载记录。"""
+        key = self._normalize_download_url(url)
+        record = self.download_registry.get(key)
+        if not record:
+            return None
+        path = record.get("path")
+        if isinstance(path, str) and path.strip() and Path(path).expanduser().exists():
+            return dict(record)
+        self.download_registry.pop(key, None)
+        return None
+
+    def register_download(
+        self,
+        *,
+        url: str,
+        filename: str,
+        path: str,
+        size: int,
+        method: str,
+        requested_filename: str | None = None,
+    ) -> dict[str, Any]:
+        """注册成功下载并返回快照。"""
+        key = self._normalize_download_url(url)
+        resolved_path = str(Path(path).expanduser().resolve(strict=False))
+        record = {
+            "canonical_url": key,
+            "source_url": url,
+            "requested_filename": requested_filename or filename,
+            "filename": filename,
+            "path": resolved_path,
+            "size": size,
+            "method": method,
+        }
+        self.download_registry[key] = record
+        return dict(record)
+
+    def list_downloaded_files(self) -> list[dict[str, Any]]:
+        """返回当前运行已下载文件的快照列表。"""
+        return [dict(record) for record in self.download_registry.values()]
 
     def bind_log_context(self, step: int | str | None = None) -> AbstractContextManager[LogContext]:
         """将当前状态的追踪 ID 和运行 ID 绑定到日志上下文中。

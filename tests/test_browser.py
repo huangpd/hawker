@@ -13,6 +13,7 @@ from hawker_agent.browser.actions import (
     browser_download,
 )
 from hawker_agent.browser.netlog import NETLOG_INJECT_JS
+from hawker_agent.models.state import CodeAgentState
 from hawker_agent.observability import collect_observations
 from hawker_agent.tools.browser_tools import register_browser_tools
 from hawker_agent.tools.registry import ToolRegistry
@@ -247,6 +248,77 @@ async def test_browser_download_uses_session_target_dir(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_browser_download_reuses_registry_entry(tmp_path: Path) -> None:
+    state = CodeAgentState()
+    session = MagicMock()
+    session.target_dir = tmp_path / "run_dir_registry"
+    session.target_dir.mkdir()
+    session.raw = MagicMock()
+    registry = ToolRegistry()
+    history = MagicMock()
+
+    calls = 0
+
+    async def _fake_download(*_args, **kwargs):
+        nonlocal calls
+        calls += 1
+        filename = kwargs.get("filename") or "download.pdf"
+        saved = session.target_dir / filename
+        saved.write_bytes(b"%PDF-1.4 fake")
+        url = _args[1] if len(_args) > 1 else kwargs.get("url", "")
+        return {
+            "ok": True,
+            "url": url,
+            "filename": saved.name,
+            "path": str(saved),
+            "size": saved.stat().st_size,
+            "method": "curl_cffi",
+        }
+
+    with patch(
+        "hawker_agent.tools.browser_tools.actions.browser_download",
+        AsyncMock(side_effect=_fake_download),
+    ):
+        register_browser_tools(registry, session, history, state)
+        browser_download_fn = registry.as_namespace_dict()["browser_download"]
+
+        first = await browser_download_fn("https://example.com/file.pdf", filename="first.pdf")
+        second = await browser_download_fn("https://example.com/file.pdf", filename="second.pdf")
+
+    assert calls == 1
+    assert first["ok"] is True
+    assert first["filename"] == "first.pdf"
+    assert second["ok"] is True
+    assert second["url"] == "https://example.com/file.pdf"
+    assert second["path"] == str((session.target_dir / "first.pdf").resolve())
+    assert second["size"] == (session.target_dir / "first.pdf").stat().st_size
+    assert second["reused"] is True
+    assert second["filename"] == "first.pdf"
+    assert second["requested_filename"] == "second.pdf"
+    assert len(state.download_registry) == 1
+    assert state.list_downloaded_files()[0]["path"] == str((session.target_dir / "first.pdf").resolve())
+
+
+def test_download_registry_ignores_noisy_query_params(tmp_path: Path) -> None:
+    state = CodeAgentState()
+    saved = tmp_path / "paper.pdf"
+    saved.write_bytes(b"%PDF-1.4 fake")
+
+    state.register_download(
+        url="https://example.com/paper.pdf?utm_source=test&download=1&token=abc",
+        filename="paper.pdf",
+        path=str(saved),
+        size=saved.stat().st_size,
+        method="curl_cffi",
+    )
+
+    hit = state.get_download_record("https://example.com/paper.pdf?token=xyz&utm_campaign=demo")
+    assert hit is not None
+    assert hit["filename"] == "paper.pdf"
+    assert hit["path"] == str(saved.resolve())
+
+
+@pytest.mark.asyncio
 async def test_browser_download_retries_once_then_succeeds(tmp_path: Path) -> None:
     session = MagicMock()
     session.target_dir = tmp_path / "run_dir_retry"
@@ -396,11 +468,11 @@ class TestBrowserToolsRegistration:
         expected = {
             "nav", "dom_state", "nav_search", "inspect_page", "js", "click",
             "click_index", "fill_input", "browser_download", "get_network_log",
-            "get_selector_from_index", "get_cookies",
+            "get_selector_from_index", "get_cookies", "list_downloaded_files",
         }
         for name in expected:
             assert name in registry, f"工具 {name} 未注册"
-        assert len(registry) == 12
+        assert len(registry) == 13
 
     def test_tool_descriptions_in_chinese(self) -> None:
         registry = ToolRegistry()

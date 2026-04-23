@@ -385,8 +385,46 @@ def register_browser_tools(
         return await actions.fill_input(session, index, text)
 
     async def browser_download(url: str, filename: str | None = None, **kwargs: object) -> dict[str, Any]:
-        """利用浏览器会话下载文件"""
-        return await actions.browser_download(session, url, filename=filename, **kwargs)
+        """利用浏览器会话下载文件。
+
+        If a matching URL has already been downloaded in this run, reuse the
+        recorded path instead of downloading again.
+        """
+        if state is not None:
+            cached = state.get_download_record(url)
+            if cached is not None:
+                reused = {
+                    "ok": True,
+                    "url": cached.get("source_url") or url,
+                    "requested_filename": filename or cached.get("requested_filename") or cached.get("filename"),
+                    "filename": cached.get("filename"),
+                    "path": cached.get("path"),
+                    "size": cached.get("size", 0),
+                    "method": cached.get("method", "registry"),
+                    "reused": True,
+                }
+                logger.info(
+                    "浏览器下载命中注册表复用: url=%s file=%s",
+                    url,
+                    reused.get("filename"),
+                )
+                return reused
+
+        result = await actions.browser_download(session, url, filename=filename, **kwargs)
+        if state is not None and result.get("ok"):
+            state.register_download(
+                url=str(result.get("url") or url),
+                filename=str(result.get("filename") or filename or ""),
+                path=str(result.get("path") or ""),
+                size=int(result.get("size") or 0),
+                method=str(result.get("method") or "unknown"),
+                requested_filename=filename,
+            )
+        return result
+
+    async def list_downloaded_files() -> list[dict[str, Any]]:
+        """返回当前运行已下载文件的注册表快照。"""
+        return state.list_downloaded_files() if state is not None else []
 
     async def get_network_log(
         filter: str = "",
@@ -469,6 +507,7 @@ def register_browser_tools(
         (click_index, "交互", True),
         (fill_input, "交互", True),
         (browser_download, "网络 & 数据", True),
+        (list_downloaded_files, "网络 & 数据", False),
         (get_network_log, "网络 & 数据", False),
         (get_selector_from_index, "交互", False),
         (get_cookies, "网络 & 数据", False),

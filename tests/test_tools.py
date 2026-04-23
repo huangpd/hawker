@@ -205,6 +205,20 @@ class TestBuildNamespace:
         assert state.final_answer_requested == "# 总结\n已完成"
 
     @pytest.mark.asyncio
+    async def test_final_answer_json_artifact_uses_summary_text_not_json_dump(self) -> None:
+        state = CodeAgentState()
+        ns = self._get_ns(state, "/tmp/test")
+        await ns["final_answer"](
+            {
+                "type": "json",
+                "content": {"summary": "中文总结：模型能力继续增强。"},
+                "items": [{"url": "https://example.com"}],
+            }
+        )
+        assert state.final_artifact_requested is not None
+        assert state.final_answer_requested == "中文总结：模型能力继续增强。"
+
+    @pytest.mark.asyncio
     async def test_browser_js_accepts_args_keyword(self) -> None:
         state = CodeAgentState()
 
@@ -389,16 +403,14 @@ def test_save_result_json_does_not_delete_result_when_checkpoint_has_same_name(t
     assert data["items_count"] == 1
 
 
-def test_save_result_json_persists_artifact(tmp_path: Path) -> None:
+def test_save_result_json_persists_answer_text(tmp_path: Path) -> None:
     result_path = save_result_json(
         tmp_path,
         [{"id": 1}],
         "done",
-        final_artifact={"type": "text", "content": "# done"},
     )
 
     data = json_mod.loads(result_path.read_text(encoding="utf-8"))
-    assert "artifact" not in data
     assert data["result"] == "done"
 
 
@@ -407,13 +419,63 @@ def test_save_result_json_does_not_duplicate_json_items_artifact(tmp_path: Path)
     result_path = save_result_json(
         tmp_path,
         items,
-        json_mod.dumps(items, ensure_ascii=False),
-        final_artifact={"type": "json", "content": items},
+        "中文总结：共 2 条，详见 items 字段。",
     )
 
     data = json_mod.loads(result_path.read_text(encoding="utf-8"))
-    assert data["result"] == "[结构化 JSON 结果] 共 2 条记录，详见 items 字段。"
+    assert data["result"] == "中文总结：共 2 条，详见 items 字段。"
     assert data["items"] == items
+
+
+def test_save_result_json_result_matches_terminal_answer(tmp_path: Path) -> None:
+    answer = (
+        "已查看 @sama 和 @claudeai 各最新 10 条可见动态，共 20 条。\n\n"
+        "@sama 近 10 条要点：\n"
+        "- 2025-02-10: very long raw item\n"
+        "- 2025-03-30: another raw item\n\n"
+        "中文总结与 AI 洞察：\n"
+        "1. Sam Altman 更偏个人表达。\n"
+        "2. Claude 官方动态更偏产品节奏。"
+    )
+    result_path = save_result_json(
+        tmp_path,
+        [{"account": "sama", "url": "https://x.com/sama/status/1"}],
+        answer,
+    )
+
+    data = json_mod.loads(result_path.read_text(encoding="utf-8"))
+    assert data["result"] == answer
+    assert "@sama 近 10 条要点" in data["result"]
+
+
+def test_save_result_json_keeps_short_plain_summary_as_is(tmp_path: Path) -> None:
+    answer = "中文总结：\n1. 模型能力继续下放。\n2. 长上下文和 coding 仍是重点。"
+    result_path = save_result_json(
+        tmp_path,
+        [{"account": "claudeai", "url": "https://x.com/claudeai/status/1"}],
+        answer,
+    )
+
+    data = json_mod.loads(result_path.read_text(encoding="utf-8"))
+    assert data["result"] == answer
+
+
+def test_save_result_json_keeps_long_analysis_without_marker(tmp_path: Path) -> None:
+    answer = "\n".join(
+        ["已查看 Sam Altman（@sama）最新 10 条 X 动态。", "", "要点概览："]
+        + [f"{i}. 这是一条较长的总结性要点，不应被 exporter 裁掉。" for i in range(1, 11)]
+        + ["", "AI 新洞察：", "AI agent 正在从聊天工具转向工作流执行层。"]
+    )
+    result_path = save_result_json(
+        tmp_path,
+        [{"account": "sama", "url": "https://x.com/sama/status/1"}],
+        answer,
+    )
+
+    data = json_mod.loads(result_path.read_text(encoding="utf-8"))
+    assert data["result"] == answer
+    assert "1. 这是一条较长的总结性要点" in data["result"]
+    assert "10. 这是一条较长的总结性要点" in data["result"]
 
 
 def test_save_result_json_reconciles_missing_downloaded_files(tmp_path: Path) -> None:

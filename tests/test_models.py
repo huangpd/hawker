@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -26,9 +27,10 @@ from hawker_agent.agent.final_delivery import (
     replace_state_items,
     resolve_final_items,
 )
-from hawker_agent.agent.runner import _build_namespace_skip_names
+from hawker_agent.agent.runner import _build_namespace_skip_names, _start_observer_sidecar
 from hawker_agent.agent.evaluator import build_final_evaluation_messages
 from hawker_agent.agent.namespace import HawkerNamespace
+from hawker_agent.knowledge.observer import ObserverEvidence
 
 
 # ─── exceptions ─────────────────────────────────────────────────
@@ -225,6 +227,83 @@ class TestCodeAgentState:
         assert "fetch" in skip_names
         assert "json" in skip_names
         assert "run_dir" in skip_names
+
+    @pytest.mark.asyncio
+    async def test_observer_sidecar_spawns_background_worker(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[str] = []
+        evidence = ObserverEvidence(
+            domain="example.com",
+            execution_log="Step 1\n```python\nawait nav('https://example.com')\n```",
+            network_summary="No useful network evidence.",
+            source_url="https://example.com",
+        )
+
+        async def fake_collect_observer_evidence(**kwargs: object) -> ObserverEvidence:
+            calls.append("collect")
+            return evidence
+
+        async def fake_generate_and_store_site_sop_from_evidence(**kwargs: object) -> None:
+            calls.append("generate")
+
+        class FakeThread:
+            def __init__(self, *, target: object, name: str, daemon: bool) -> None:
+                calls.append(f"thread:{name}:{daemon}")
+                self.target = target
+
+            def start(self) -> None:
+                calls.append("start")
+
+        class FakeStore:
+            def recent_accepted_update_count(self, domain: str, *, hours: int) -> int:
+                calls.append(f"recent:{domain}:{hours}")
+                return 0
+
+            def get_active_sop(self, domain: str) -> None:
+                calls.append(f"existing:{domain}")
+                return None
+
+        class FakeConfig(SimpleNamespace):
+            def model_copy(self, *, deep: bool) -> "FakeConfig":
+                calls.append(f"copy:{deep}")
+                return self
+
+        state = CodeAgentState(run_id="abc123")
+        state.done = True
+        state.items.append([{"url": "https://example.com/a"}])
+        cells = [
+            CodeCell(
+                step=1,
+                thought="",
+                source="await nav('https://example.com')",
+                output="ok",
+                error=None,
+                status=CellStatus.SUCCESS,
+                duration=0.1,
+                usage=TokenStats(),
+            )
+        ]
+        cfg = FakeConfig(observer_enabled=True, model_name="openai/test", observer_reasoning_effort="")
+
+        monkeypatch.setattr("hawker_agent.agent.runner.collect_observer_evidence", fake_collect_observer_evidence)
+        monkeypatch.setattr(
+            "hawker_agent.agent.runner.generate_and_store_site_sop_from_evidence",
+            fake_generate_and_store_site_sop_from_evidence,
+        )
+        monkeypatch.setattr("hawker_agent.agent.runner.threading.Thread", FakeThread)
+
+        await _start_observer_sidecar(
+            task="抓取 https://example.com",
+            state=state,
+            cells=cells,
+            browser=object(),  # type: ignore[arg-type]
+            sop_store=FakeStore(),  # type: ignore[arg-type]
+            cfg=cfg,
+        )
+
+        assert "collect" in calls
+        assert "generate" not in calls
+        assert any(call.startswith("thread:observer-sidecar-abc123:False") for call in calls)
+        assert "start" in calls
 
 
 # ─── CodeCell ───────────────────────────────────────────────────

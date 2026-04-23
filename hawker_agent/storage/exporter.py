@@ -152,7 +152,6 @@ def save_result_json(
     run_dir: Path,
     items: list[dict],
     answer: str,
-    final_artifact: dict[str, Any] | None = None,
     checkpoint_files: set[str] | None = None,
 ) -> Path:
     """保存最终结果为 JSON 文件，并清理中间检查点。
@@ -160,7 +159,7 @@ def save_result_json(
     Args:
         run_dir (Path): 结果文件的保存目录。
         items (list[dict]): 采集到的所有数据项。
-        answer (str): 任务的最终摘要回答。
+        answer (str): 任务的最终回答文本，会原样写入 ``result`` 字段。
         checkpoint_files (set[str] | None, optional): 待清理的中间检查点文件集合。
 
     Returns:
@@ -171,10 +170,9 @@ def save_result_json(
     path = result_dir / "result.json"
 
     normalized_items = _reconcile_downloaded_files(run_dir, items)
-    result_text = _build_result_text(answer, final_artifact, normalized_items)
 
     data = {
-        "result": result_text,
+        "result": answer,
         "items": normalized_items,
         "items_count": len(normalized_items),
     }
@@ -209,34 +207,6 @@ def _reconcile_downloaded_files(run_dir: Path, items: list[dict[str, Any]]) -> l
                 row["download_status"] = "missing_on_disk"
         normalized.append(row)
     return normalized
-
-
-def _build_result_text(answer: str, artifact: dict[str, Any] | None, items: list[dict]) -> str:
-    """构建面向人类阅读的顶层 result 文本。
-
-    对 JSON 交付，机器可读数据统一由 ``items`` 承载，
-    顶层 ``result`` 不再保存一份截断 JSON。
-    """
-    if isinstance(artifact, dict) and str(artifact.get("type") or "").lower() == "json":
-        content = artifact.get("content")
-        if items:
-            return f"[结构化 JSON 结果] 共 {len(items)} 条记录，详见 items 字段。"
-        if isinstance(content, dict):
-            message = content.get("message")
-            status = content.get("status")
-            if status or message:
-                parts = ["[JSON 结果]"]
-                if status:
-                    parts.append(f"status={status}")
-                if message:
-                    parts.append(str(message))
-                    parts.append("详见 items 字段。")
-                return " ".join(parts)
-        return "[JSON 结果] 详见 items 字段。"
-
-    if len(answer) > 2000:
-        return answer[:1990] + "... [结果已截断，详见 items 字段]"
-    return answer
 
 
 def save_llm_io_json(

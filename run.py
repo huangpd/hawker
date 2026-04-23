@@ -17,16 +17,6 @@ from rich.spinner import Spinner
 # =================================================================
 
 
-
-TASK="""
-1. 打开 https://arxiv.org/search/advanced
-2. 搜素标题为 web agent 论文，查找2026年1月12到2026年3月30之间的论文
-3. 返回前3篇论文的链接、标题、摘要、发表时间，然后下载本地
-"""
-
-
-
-
 TASK="""
 1. 检索web agent paper 获取前5条论文
 2. 返回前5条论文标题，下载链接（可下载的pdf链接），摘要，研究领域
@@ -60,15 +50,7 @@ TASK="""
 TASK="""
 步骤1: 打开 https://www.ahnews.com.cn/df/hss/pc/lay/node_525.html,点击"下一页"，获取3页数据,获取列表页URL和title 
 """
-TASK="""
-1.打开 https://github.com/trending
-2.获取当前页面的项目URL、start、fork、today_start，获取第一页直接返回
-提取字段: 
-- URL: 项目链接 
-- start: start数 
-- fork： fork数
-- today_start: today_start数
-"""
+
 TASK="""
 步骤1: 打开网址 https://mcp.aibase.com/zh/explore 
 步骤2: 找到下一页按钮，获取前10页数据 ，分类点击 "搜索工具",认证状态点击“不限”，编程语言是“python”，类型 “MCP Server”，点击按“按下载量”排序
@@ -103,12 +85,10 @@ TASK="""
 - fork： fork数
 - today_start: today_start数
 """
+
 TASK="""
-步骤1: 打开 https://www.ahnews.com.cn/df/hss/pc/lay/node_525.html,点击"下一页"，获取30页数据,获取列表页URL和title 
-"""
-TASK="""
-1.获取content里提到的的论文，论文下载链接（缺少部分应该网络搜索补全，最好pdf），摘要，研究领域,返回json
-content='''
+1.
+获取下面里提到的的论文，获取下载链接，摘要，研究领域,并下载论文
 [87] Jae-Woo Choi, Hyungmin Kim, Hyobin Ong, Youngwoo Yoon, Minsu Jang, Jaehong Kim, et al.
 Reactree: Hierarchical task planning with dynamic tree expansion using llm agent nodes. 2025.
 [88] Siddharth Nayak, Adelmo Morrison Orozco, Marina Ten Have, Vittal Thirumalai, Jackson
@@ -122,18 +102,38 @@ A survey of AI agent protocols, 2025. URL https://arxiv.org/abs/2504.16736.
 '''
 """
 
-TASK="""
-去 https://x.com/gregpr07(最好从google跳转，不然容易风控)  查看这个人最新10条动态，用中文总结一下，让我知道他最近的在干什么，有什么新的洞察
-"""
+
 TASK="""
 去 https://x.com/OpenAI，https://x.com/sama，https://x.com/claudeai，https://x.com/bcherny  查看这些账号最新10条动态，用中文总结一下，有AI有什么新的洞察
 """
 
 TASK="""
-步骤1: 获取 https://huggingface.co/datasets/nvidia/Nemotron-ClimbMix 仓库信息
-步骤5：提取这个仓库所有的文件名和下载URL
+步骤1: 获取 https://huggingface.co/datasets/nvidia/Nemotron-ClimbMix 仓库信息,提取这个仓库所有的文件名和下载URL
 """
 
+TASK="看看 iPhone 17 在中国的价格"
+
+TASK="""
+1.打开 https://github.com/trending
+2.获取当前页面的项目URL、start、fork、today_start
+提取字段: 
+- URL: 项目链接 
+- start: start数 
+- fork： fork数
+- today_start: today_start数
+"""
+
+
+TASK="""
+1. 打开 https://arxiv.org/search/advanced
+2. 搜素标题为 web agent 论文，查找2026年2月12到2026年4月30之间的论文
+3. 返回该条件下所有论文的链接、标题、摘要、发表时间，json格式
+"""
+TASK="""打开 https://arxiv.org/search/advanced 搜索关于 "LLM agent planning" 的 15 篇论文，返回标题、链接、摘要、研究领域，并下载论文"""
+
+TASK="""
+去 从google 进去搜索特朗普的x社交， 查看这个人最新10条动态，用中文总结一下，让我知道他最近的在干什么，有什么新的洞察,返回markdown格式
+"""
 # =================================================================
 
 async def main():

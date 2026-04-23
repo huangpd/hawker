@@ -45,27 +45,38 @@ def normalize_final_artifact(
 
 
 def artifact_to_answer_text(artifact: dict[str, Any]) -> str:
-    """提取给用户展示/兼容旧流程的最终 answer 文本。"""
+    """Builds human-facing summary or analysis text from an artifact.
+
+    ``final_answer`` should remain a human-facing summary/analysis field.
+    Structured detail belongs to ``artifact.items`` and should not be expanded
+    back into a long JSON dump here.
+    """
     artifact_type = str(artifact.get("type") or "").strip().lower()
     if artifact_type == "json":
         content = artifact.get("content")
-        if content is not None and not isinstance(content, str):
-            return json.dumps(content, ensure_ascii=False, indent=2)
-
         items = artifact.get("items")
+        if isinstance(content, dict):
+            for key in ("summary", "message", "result", "answer"):
+                value = content.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        if isinstance(content, str) and content.strip():
+            return content.strip()
         if items:
-            return json.dumps({"items": items}, ensure_ascii=False, indent=2)
+            return f"已完成，共 {len(items)} 条记录。"
+        if content is not None and not isinstance(content, str):
+            return "[结构化结果] 详见 items 字段。"
 
     content = artifact.get("content")
     if isinstance(content, str):
-        return content
+        return content.strip()
 
     items = artifact.get("items")
     if items:
-        return json.dumps({"items": items}, ensure_ascii=False, indent=2)
+        return f"已完成，共 {len(items)} 条记录。"
 
     if content is not None:
-        return json.dumps(content, ensure_ascii=False, indent=2)
+        return str(content)
 
     return ""
 

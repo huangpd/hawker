@@ -52,6 +52,27 @@ def test_cli_config_show_masks_secrets(monkeypatch) -> None:
     assert "sk-1...7890" in result.stdout
     assert "openai/gpt-5.4" in result.stdout
     assert "Config Sources" in result.stdout
+    assert "local" not in result.stdout.lower()
+
+
+def test_settings_ignores_current_directory_dotenv(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("MODEL_NAME", raising=False)
+    primary = default_global_config_path()
+    primary.parent.mkdir(parents=True, exist_ok=True)
+    primary.write_text("OPENAI_API_KEY=sk-primary\nMODEL_NAME=openai/primary\n", encoding="utf-8")
+
+    with runner.isolated_filesystem():
+        Path(".env").write_text("OPENAI_API_KEY=sk-local\nMODEL_NAME=openai/local\n", encoding="utf-8")
+        get_settings.cache_clear()
+        try:
+            cfg = get_settings()
+        finally:
+            get_settings.cache_clear()
+
+    assert cfg.openai_api_key == "sk-primary"
+    assert cfg.model_name == "openai/primary"
 
 
 def test_cli_doctor_reports_missing_required_env(monkeypatch, tmp_path: Path) -> None:
@@ -95,7 +116,7 @@ def test_cli_config_init_default_writes_global_path(monkeypatch, tmp_path: Path)
     assert target.exists()
 
 
-def test_cli_config_set_updates_local_env(monkeypatch, tmp_path: Path) -> None:
+def test_cli_config_set_updates_primary_config(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     with runner.isolated_filesystem():
         result = runner.invoke(app, ["config", "set", "model", "openai/gpt-5.4"])
@@ -117,7 +138,7 @@ def test_cli_config_init_interactive_writes_answers() -> None:
         assert "MODEL_NAME=openai/gpt-5.4" in text
 
 
-def test_cli_doctor_reports_global_and_local_config_paths(monkeypatch, tmp_path: Path) -> None:
+def test_cli_doctor_reports_primary_config_path(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("MODEL_NAME", raising=False)
@@ -134,6 +155,8 @@ def test_cli_doctor_reports_global_and_local_config_paths(monkeypatch, tmp_path:
 
 def test_blank_storage_paths_fall_back_to_defaults(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("SCRAPE_DIR", raising=False)
+    monkeypatch.delenv("KNOWLEDGE_DB_PATH", raising=False)
     global_env = default_global_config_path()
     global_env.parent.mkdir(parents=True, exist_ok=True)
     global_env.write_text(

@@ -100,7 +100,7 @@ _SUBCOMMANDS = {"config", "doctor", "run"}
 def _run_task(task: str, max_steps: int | None) -> None:
     cfg = get_settings()
     if not cfg.openai_api_key:
-        console.print("[red]错误: OPENAI_API_KEY 未设置。请检查 .env 文件。[/red]")
+        console.print(f"[red]错误: OPENAI_API_KEY 未设置。请检查主配置文件: {default_global_config_path()}[/red]")
         sys.exit(1)
 
     console.print(Panel(f"[bold blue]任务开始:[/bold blue]\n{task}", title="HawkerAgent", expand=False))
@@ -203,7 +203,7 @@ def _settings_or_exit() -> Settings:
         return get_settings()
     except Exception as exc:
         console.print(f"[red]配置加载失败: {exc}[/red]")
-        console.print("运行 [bold]hawker config init[/bold] 生成全局配置，或检查当前目录 .env 覆盖。")
+        console.print(f"运行 [bold]hawker config init[/bold] 生成主配置文件: {default_global_config_path()}")
         raise typer.Exit(2) from exc
 
 
@@ -358,7 +358,7 @@ def main() -> None:
 @app.command("run")
 def run_command(
     task: str = typer.Argument(..., help="描述你要爬取的任务"),
-    max_steps: int | None = typer.Option(None, "--max-steps", "-s", help="最大允许迭代步数；未传时使用 .env 中的 MAX_STEPS"),
+    max_steps: int | None = typer.Option(None, "--max-steps", "-s", help="最大允许迭代步数；未传时使用 config.env 中的 MAX_STEPS"),
 ) -> None:
     """Run a Hawker task explicitly as a subcommand."""
     _run_task(task, max_steps)

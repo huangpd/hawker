@@ -82,8 +82,6 @@ playwright install chromium
 
 ```bash
 hawker config init
-# or, from a source checkout:
-cp .env.example .env
 ```
 
 By default, `hawker config init` starts an interactive setup wizard and writes

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Literal
@@ -12,8 +14,12 @@ from hawker_agent.agent.namespace import HawkerNamespace, build_namespace
 from hawker_agent.agent.prompts import build_system_prompt
 from hawker_agent.agent.step_runtime import run_agent_step
 from hawker_agent.browser.session import BrowserSession
-from hawker_agent.config import get_settings
-from hawker_agent.knowledge.observer import maybe_generate_and_store_site_sop
+from hawker_agent.config import Settings, get_settings
+from hawker_agent.knowledge.observer import (
+    collect_observer_evidence,
+    generate_and_store_site_sop_from_evidence,
+    infer_observer_domain,
+)
 from hawker_agent.knowledge.store import SiteSOP, SiteSOPStore
 from hawker_agent.llm.client import LLMClient
 from hawker_agent.llm.tokenizer import count_tokens
@@ -30,6 +36,70 @@ from hawker_agent.tools.http_tools import close_http_clients
 from hawker_agent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
+
+
+async def _start_observer_sidecar(
+    *,
+    task: str,
+    state: CodeAgentState,
+    cells: list[CodeCell],
+    browser: BrowserSession,
+    sop_store: SiteSOPStore,
+    cfg: Settings,
+) -> None:
+    """Starts observer SOP generation in a detached background thread.
+
+    The user-facing result path should not wait on the expensive observer LLM
+    call. This helper collects the lightweight evidence while the browser is
+    still available, then hands the heavy SOP generation work to a background
+    thread with its own event loop.
+    """
+    if not cfg.observer_enabled or not cfg.model_name or not state.done:
+        return
+
+    items = state.items.to_list()
+    if not items and not state.final_artifact:
+        return
+
+    domain = infer_observer_domain(task, cells)
+    if domain:
+        recent_updates = sop_store.recent_accepted_update_count(domain, hours=24)
+        if recent_updates >= 2:
+            logger.warning("Observer 命中更新熔断，已跳过生成: domain=%s", domain)
+            return
+
+    evidence = await collect_observer_evidence(task=task, cells=cells, items=items, browser=browser)
+    if evidence is None:
+        return
+    existing = sop_store.get_active_sop(evidence.domain)
+    cfg_snapshot = cfg.model_copy(deep=True)
+    source_run_id = state.run_id
+    existing_sop_markdown = existing.sop_markdown if existing else ""
+
+    def _worker() -> None:
+        try:
+            asyncio.run(
+                generate_and_store_site_sop_from_evidence(
+                    evidence=evidence,
+                    existing_sop_markdown=existing_sop_markdown,
+                    sop_store=sop_store,
+                    cfg=cfg_snapshot,
+                    source_run_id=source_run_id,
+                    task=task,
+                )
+            )
+        except Exception as exc:  # pragma: no cover - defensive background path
+            logger.warning("Observer 后台生成失败，已忽略: %s", exc)
+        finally:
+            flush_langfuse()
+
+    thread = threading.Thread(
+        target=_worker,
+        name=f"observer-sidecar-{source_run_id}",
+        daemon=False,
+    )
+    thread.start()
+    logger.info("Observer 已转入后台生成，不阻塞结果返回: run_id=%s domain=%s", source_run_id, evidence.domain)
 
 
 def _build_site_sop_workspace(sop: SiteSOP, *, max_chars: int = 5000) -> str:
@@ -195,7 +265,6 @@ def _build_result(
         state.run_dir,
         export_items or state.items.to_list(),
         final_answer,
-        final_artifact=final_artifact,
         checkpoint_files=state.checkpoint_files,
     )
     llm_io_path = save_llm_io_json(
@@ -336,9 +405,10 @@ async def run(
                 namespace = HawkerNamespace(system_dict, str(run_dir))
 
                 async def _finish(stop_reason: Literal["done", "token_budget", "no_progress", "max_steps"], step: int) -> CodeAgentResult:
+                    result = _build_result(state, cells, stop_reason, step, log_path, task, cfg.model_name, namespace)
                     if cfg.observer_enabled:
                         try:
-                            await maybe_generate_and_store_site_sop(
+                            await _start_observer_sidecar(
                                 task=task,
                                 state=state,
                                 cells=cells,
@@ -348,7 +418,7 @@ async def run(
                             )
                         except Exception as exc:
                             logger.warning("Observer 旁路生成失败，已忽略: %s", exc)
-                    return _build_result(state, cells, stop_reason, step, log_path, task, cfg.model_name, namespace)
+                    return result
 
                 for step in range(1, max_steps + 1):
                     with trace(f"agent_step_{step}", step=step):

@@ -618,6 +618,45 @@ async def maybe_generate_and_store_site_sop(
         return None
 
     existing = sop_store.get_active_sop(evidence.domain)
+    stored = await generate_and_store_site_sop_from_evidence(
+        evidence=evidence,
+        existing_sop_markdown=existing.sop_markdown if existing else "",
+        sop_store=sop_store,
+        cfg=cfg,
+        source_run_id=state.run_id,
+        task=task,
+    )
+    return stored
+
+
+async def generate_and_store_site_sop_from_evidence(
+    *,
+    evidence: ObserverEvidence,
+    existing_sop_markdown: str,
+    sop_store: SiteSOPStore,
+    cfg: Settings,
+    source_run_id: str,
+    task: str = "",
+) -> SiteSOP | None:
+    """Generates and stores a site SOP from pre-collected evidence.
+
+    This variant is suitable for background execution after the user-facing
+    result has already been returned. It does not depend on a live browser
+    session or mutable run state.
+
+    Args:
+        evidence: Pre-collected observer evidence bundle.
+        existing_sop_markdown: Current active SOP markdown for the domain.
+        sop_store: SOP persistence layer.
+        cfg: Runtime settings.
+        source_run_id: Run identifier used for lineage metadata.
+        task: Original task text when available. Used to enrich metadata such as
+            page pattern and requested field contract.
+
+    Returns:
+        The stored :class:`SiteSOP` on success, otherwise ``None`` when SOP
+        generation is rejected or fails.
+    """
     examples = select_observer_examples(evidence.execution_log, evidence.network_summary)
     messages = [
         {
@@ -629,7 +668,7 @@ async def maybe_generate_and_store_site_sop(
                 example_sops="\n\n".join(
                     f"<!-- example: {example.key} -->\n{example.content}" for example in examples
                 ),
-                existing_sop=existing.sop_markdown if existing else "",
+                existing_sop=existing_sop_markdown,
                 execution_log=evidence.execution_log,
                 network_summary=evidence.network_summary,
                 update_reason="success_distillation",
@@ -659,7 +698,7 @@ async def maybe_generate_and_store_site_sop(
         logger.warning("Observer 返回的 SOP 未通过录入校验，已拒绝写入: %s", validation.reason)
         return None
 
-    merged_markdown = smart_merge_sop(existing.sop_markdown, markdown) if existing else markdown
+    merged_markdown = smart_merge_sop(existing_sop_markdown, markdown) if existing_sop_markdown else markdown
     merged_validation = validate_browser_harness_style_sop(merged_markdown, evidence.domain)
     if not merged_validation.ok:
         logger.warning("Observer 合并后的 SOP 未通过录入校验，已拒绝写入: %s", merged_validation.reason)
@@ -685,7 +724,7 @@ async def maybe_generate_and_store_site_sop(
                 sop_markdown=merged_markdown,
                 golden_rule=golden_rule,
                 update_reason="success_distillation",
-                source_run_id=state.run_id,
+                source_run_id=source_run_id,
                 source_url=evidence.source_url,
                 proof_summary=evidence.execution_log[:400],
                 last_generated_at=datetime.now(_BEIJING_TZ).isoformat(),

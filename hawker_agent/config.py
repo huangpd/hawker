@@ -33,7 +33,7 @@ def resolve_env_files() -> list[Path]:
 class Settings(BaseSettings):
     """应用程序配置类，替代 os.getenv() 全局常量。
 
-    该类使用 pydantic-settings 从环境变量和可选的 .env 文件中加载配置。
+    该类使用 pydantic-settings 从环境变量和 `~/hawker/config.env` 加载配置。
 
     Attributes:
         openai_api_key (str): OpenAI 兼容 LLM 服务的 API 密钥。
@@ -48,8 +48,8 @@ class Settings(BaseSettings):
         max_total_tokens (int): 任务允许的最大总 token 数。默认为 120,000。
         max_no_progress_steps (int): 停止前允许的最大无进展步数。默认为 10。
         message_compression_tokens (int): 触发消息压缩的 token 阈值。默认为 12,000。
-        scrape_dir (Path): 存储抓取数据的目录。默认为 "crawler_agent"。
-        knowledge_db_path (Path): SQLite 站点 SOP 数据库路径。默认为 "hawker_file/knowledge.db"。
+        scrape_dir (Path): 存储抓取数据的目录。默认为 ``~/hawker``。
+        knowledge_db_path (Path): SQLite 站点 SOP 数据库路径。默认为 ``~/hawker/knowledge.db``。
         headless (bool): 是否以无头模式运行浏览器。默认为 False。
         log_level (str): 日志级别（如 "INFO", "DEBUG"）。默认为 "INFO"。
     """
@@ -159,7 +159,7 @@ class Settings(BaseSettings):
     )
     @classmethod
     def _empty_path_as_none(cls, value: object) -> object:
-        """将 .env 中空的可选路径配置视为未配置。"""
+        """将配置文件中空的可选路径配置视为未配置。"""
         if isinstance(value, str) and not value.strip():
             return None
         return value

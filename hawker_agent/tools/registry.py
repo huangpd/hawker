@@ -80,7 +80,11 @@ class ToolRegistry:
         wrapped_fn = self._wrap_tool(fn, tool_name)
         
         doc = inspect.getdoc(fn) or ""
-        summary = doc.splitlines()[0].strip() if doc else ""
+        if doc:
+            paragraph = doc.split("\n\n", 1)[0]
+            summary = " ".join(line.strip() for line in paragraph.splitlines() if line.strip())
+        else:
+            summary = ""
         sig = inspect.signature(fn, eval_str=True)
         resolved = inspect.get_annotations(fn, eval_str=True)
         ret = resolved.get("return", str)

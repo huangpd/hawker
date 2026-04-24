@@ -274,6 +274,26 @@ async def _capture_dom_state(session: BrowserSession) -> tuple[str, dict]:
             return fallback_text, snapshot
 
 
+async def _capture_navigation_meta(session: BrowserSession) -> dict[str, Any]:
+    """只读取最轻量的页面元信息，不构建 DOM summary。"""
+    try:
+        raw = await run_js(
+            session,
+            "(function(){return JSON.stringify({"
+            "title: document.title || '',"
+            "url: location.href || ''"
+            "})})()",
+        )
+        info = json.loads(raw)
+        return {
+            "title": str(info.get("title", "") or ""),
+            "url": str(info.get("url", "") or ""),
+        }
+    except Exception:
+        logger.debug("读取轻量页面元信息失败", exc_info=True)
+        return {"title": "", "url": ""}
+
+
 def _build_dom_action_result(
     *,
     full_dom: str,
@@ -296,7 +316,10 @@ def _build_dom_action_result(
     title = snapshot.get("title") or "(无标题)"
     interactive_count = snapshot.get("interactive_count", 0)
 
-    if mode == "full":
+    if mode == "skip":
+        context = None
+        summary = f"[OK] {title} | DOM=skipped"
+    elif mode == "full":
         context = full_dom
         summary = f"[OK] {title} | 交互元素 {interactive_count} | DOM=full"
     elif mode == "diff":
@@ -404,7 +427,7 @@ async def nav(
     Args:
         session (BrowserSession): 浏览器会话对象。
         url (str): 目标页面 URL。
-        mode (str, optional): 上下文模式，支持 "summary"、"diff"、"full"。默认为 "summary"。
+        mode (str, optional): 上下文模式，支持 "skip"、"summary"、"diff"、"full"。默认为 "summary"。
         previous_snapshot (dict | None, optional): 上一个页面的快照，用于 "diff" 模式。默认为 None。
 
     Returns:
@@ -417,13 +440,27 @@ async def nav(
     await session.raw.navigate_to(url)
     await asyncio.sleep(1)
     session.netlog_cursor = 0  # 页面跳转后 __netlog 被清空，重置游标
-    full_dom, snapshot = await _capture_dom_state(session)
-    result = _build_dom_action_result(
-        full_dom=full_dom,
-        snapshot=snapshot,
-        mode=mode,
-        previous_snapshot=previous_snapshot,
-    )
+    if (mode or "summary").lower() == "skip":
+        meta = await _capture_navigation_meta(session)
+        snapshot = build_dom_snapshot(
+            title=meta.get("title", ""),
+            url=meta.get("url", ""),
+            dom_repr="",
+        )
+        result = _build_dom_action_result(
+            full_dom="",
+            snapshot=snapshot,
+            mode="skip",
+            previous_snapshot=previous_snapshot,
+        )
+    else:
+        full_dom, snapshot = await _capture_dom_state(session)
+        result = _build_dom_action_result(
+            full_dom=full_dom,
+            snapshot=snapshot,
+            mode=mode,
+            previous_snapshot=previous_snapshot,
+        )
     final_url = snapshot.get("url") or ""
     changed = bool(final_url) and _urls_differ(url, final_url)
     if changed:
@@ -820,7 +857,6 @@ async def get_cookies(
     Returns:
         list[dict[str, Any]]: 筛选后的 Cookie 字典列表。
     """
-    # 50年架构师提示：Cookie 是会话的灵魂，必须保证提取的鲁棒性
     playwright_cookies: list[dict[str, Any]] = []
     try:
         if hasattr(session.raw, "get_cookies"):

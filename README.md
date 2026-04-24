@@ -117,6 +117,26 @@ MODEL_NAME=openai/gpt-5.4
 HEADLESS=false
 ```
 
+Browser modes:
+
+```ini
+# Local browser (default)
+BROWSER_PROVIDER=local
+HEADLESS=false
+
+# Browser Use Cloud
+BROWSER_PROVIDER=browser_use_cloud
+BROWSER_USE_API_KEY=...
+BROWSER_USE_PROFILE_ID=...
+BROWSER_USE_PROXY_COUNTRY_CODE=us
+```
+
+Notes:
+
+- `BROWSER_PROVIDER=browser_use_cloud` makes Hawker create a Browser Use Cloud session automatically and connect through its returned CDP URL.
+- `BROWSER_USE_PROFILE_ID` is strongly recommended. It lets the cloud browser reuse login state, cookies, and other persisted browser data across sessions.
+- `BROWSER_CDP_URL` is still supported when you already have an existing browser endpoint and do not want Hawker to create one for you.
+
 Inspect the effective configuration:
 
 ```bash
@@ -138,7 +158,7 @@ Important configuration groups:
 | LLM | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `MODEL_NAME`, `SMALL_MODEL_NAME`, `REASONING_EFFORT` |
 | Runtime | `MAX_STEPS`, `MAX_TOTAL_TOKENS`, `MAX_NO_PROGRESS_STEPS`, `MESSAGE_COMPRESSION_TOKENS` |
 | Sidecars | `HEALER_ENABLED`, `FINAL_EVALUATOR_ENABLED`, `OBSERVER_ENABLED` |
-| Browser | `HEADLESS`, `BROWSER_EXECUTABLE_PATH`, `BROWSER_USER_DATA_DIR`, `BROWSER_STORAGE_STATE`, `BROWSER_CDP_URL` |
+| Browser | `HEADLESS`, `BROWSER_PROVIDER`, `BROWSER_EXECUTABLE_PATH`, `BROWSER_USER_DATA_DIR`, `BROWSER_STORAGE_STATE`, `BROWSER_CDP_URL`, `BROWSER_USE_API_KEY`, `BROWSER_USE_PROFILE_ID`, `BROWSER_USE_PROXY_COUNTRY_CODE` |
 | Storage & logs | `SCRAPE_DIR`, `KNOWLEDGE_DB_PATH`, `LOG_LEVEL` |
 
 Default storage paths now follow a simple user-home layout rather than the current working directory:

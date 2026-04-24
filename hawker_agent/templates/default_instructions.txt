@@ -2,7 +2,8 @@
 
 ### 1. 探测阶段 (Exploration)
 - **API 优先**：能用 API 获取的数据绝对不用 DOM 提取。
-- **搜索默认**：做通用 Web 搜索时，默认优先使用 `duckduckgo.com`，降低 CAPTCHA 风险。
+- **搜索默认**：做通用 Web 搜索时，优先使用 `await search_web(...)` 获取标题、链接和摘要；只有 `search_web(...)` 结果不足或必须依赖浏览器页交互时，才退回 `nav_search()` / 搜索引擎页面。
+- **SOP 直达**：如果已命中高置信站点 SOP，且下一步就是按已验证路径直接提取或翻页，优先使用 `await nav(url, mode="skip")`；这会只导航并做轻量页面确认，不读取 DOM summary。
 - **统一侦察**：在 `await nav(url)` 后，优先调用 `await inspect_page(include=["dom", "network"])`，一次拿到页面摘要和新增抓包；返回的 `network.summary.likely_data_api` 会直接列出疑似业务接口，节省翻查时间。
 - **轻量遮挡处理**：如果导航后出现明显挡住交互的 cookie banner / modal / overlay，先尝试关闭或 dismiss；优先 `close / dismiss / reject / x`，只有确认是 cookie/consent 弹层且确实挡路时才点 `accept`。如果页面已可正常交互，不要为此额外浪费一步。
 - **关键突破**：如果首次抓包只有框架请求，先做一次交互，再用 `inspect_page(network=True)` 看新增请求。SPA 的数据 API 常在交互后触发。
@@ -32,6 +33,7 @@ for _ in range(5):
 
 ### 3. API 重放策略
 - 如果发现数据 API（JSON 响应、列表数据）→ 解析 reqBody 参数 → 直接用 `fetch(parse="json")` 重放
+- 在分页 API 容易触发频率限制时，加轻量延迟，await asyncio.sleep(...)
 - **鉴权处理**：如果 API 返回 401/403，先用 `inspect_page(include=["network"])` 拿到最近一条成功请求的 headers，用 `get_cookies(domain=...)` 拿到对应域的登录态，再用 `fetch(...)` 重放。
  ```python
 for page in range(1,5):
@@ -45,9 +47,9 @@ for page in range(1,5):
 
 ## 任务结束总结 (final_answer 规范)
 任务结束调用 `final_answer()` 时，不要只写 `"done"` 或空泛结论。
-- 给用户一个总结性、有信息量的最终交付；它可以较长，但应以总结、洞察、归纳为主，而不是逐条复述原始记录。
+- 给用户一个总结性、有信息量的最终交付；它可以较长，但应以客观事实摘要、推测、归纳为主，而不是逐条复述原始记录。
 - 如果已经拿到结构化结果，优先说明完成情况和核心字段/结论。
-- 如果 `items` 已经承载了逐条明细，`final_answer()` 不要再把每一条原始记录完整复述一遍；保留总结、洞察、结论即可。
+- 如果 `items` 已经承载了逐条明细，`final_answer()` 不要再把每一条原始记录完整复述一遍；保留事实摘要、推测、归纳即可。
 - 不要解释系统如何落盘，不要提 `result.json`，不要写“结果会由系统保存”这类运行说明。
 
 `save_checkpoint()` 只用于中途保底，文件名请使用 `checkpoint.json` 或其他临时名，禁止使用 `result.json`。

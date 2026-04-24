@@ -98,6 +98,22 @@ class TestExecute:
         assert ns.cell_local == {}
 
     @pytest.mark.asyncio
+    async def test_rejects_execution_when_session_snapshot_is_not_safe(self) -> None:
+        class NonCopyable:
+            def __deepcopy__(self, memo):
+                raise TypeError("no deepcopy")
+
+        ns = self._make_ns()
+        ns.session["bad_state"] = NonCopyable()
+
+        result = await execute("new_value = 1\nobserve('should not run')", ns)
+
+        assert "[执行错误]" in result
+        assert "session 快照失败" in result
+        assert "bad_state" in result
+        assert "new_value" not in ns.session
+
+    @pytest.mark.asyncio
     async def test_no_output(self) -> None:
         ns = self._make_ns()
         result = await execute("x_val = 1", ns)

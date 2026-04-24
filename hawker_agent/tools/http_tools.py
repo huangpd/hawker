@@ -10,6 +10,7 @@ from typing import Any
 
 import httpx
 
+from hawker_agent.config import get_settings
 from hawker_agent.observability import emit_tool_observation
 from hawker_agent.tools.data_tools import clean_items, ensure, parse_http_response, summarize_json
 from hawker_agent.tools.registry import ToolRegistry
@@ -598,8 +599,64 @@ async def fetch(
     raise ValueError(f"fetch(parse=...) 仅支持 json / text / raw，收到: {parse}")
 
 
+async def search_web(
+    q: str,
+    limit: int = 10,
+    page: int = 1,
+    safe: str | None = None,
+    lr: str | None = None,
+    gl: str | None = None,
+) -> dict[str, Any]:
+    """做通用网页搜索时优先用它拿标题、链接和摘要，只有结果不足时再退回浏览器搜索。"""
+    query = (q or "").strip()
+    if not query:
+        raise ValueError("q 不能为空。")
+    if len(query) > 500:
+        raise ValueError("q 最多 500 个字符。")
+    if limit < 1 or limit > 10:
+        raise ValueError("limit 必须在 1 到 10 之间。")
+    if page < 1:
+        raise ValueError("page 必须 >= 1。")
+
+    cfg = get_settings()
+    api_key = (cfg.searlo_api_key or "").strip()
+    if not api_key:
+        raise RuntimeError("SEARLO_API_KEY 未配置，无法使用 search_web。")
+
+    params: dict[str, Any] = {
+        "q": query,
+        "limit": limit,
+        "page": page,
+    }
+    if safe:
+        params["safe"] = safe
+    if lr:
+        params["lr"] = lr
+    if gl:
+        params["gl"] = gl
+
+    client = await _get_client()
+    response = await client.get(
+        "https://api.searlo.tech/api/v1/search/web",
+        params=params,
+        headers={"x-api-key": api_key},
+    )
+    response.raise_for_status()
+    payload = response.json()
+    items = payload.get("items")
+    item_count = len(items) if isinstance(items, list) else 0
+    emit_tool_observation(
+        "search_web",
+        "OK",
+        f"items={item_count},page={page},limit={limit}",
+        query[:300],
+    )
+    return payload
+
+
 def register_http_tools(registry: ToolRegistry) -> None:
     """注册 HTTP 工具到 registry。"""
     registry.register(fetch, category="网络 & 数据")
+    registry.register(search_web, category="网络 & 数据")
     registry.register(http_request, category="网络 & 数据", expose_in_prompt=False)
     registry.register(http_json, category="网络 & 数据", expose_in_prompt=False)

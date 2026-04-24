@@ -77,6 +77,7 @@ class Settings(BaseSettings):
     langfuse_base_url: str | None = None
     langfuse_environment: str = "development"
     langfuse_release: str = ""
+    searlo_api_key: str | None = None
 
     # 预算控制
     max_steps: int = 30
@@ -90,12 +91,19 @@ class Settings(BaseSettings):
 
     # 浏览器
     headless: bool = False
+    browser_provider: str = "local"
     browser_executable_path: Path | None = None
     browser_user_data_dir: Path | None = None
     browser_profile_directory: str = "Default"
     browser_storage_state: Path | None = None
     browser_channel: str | None = None
     browser_cdp_url: str | None = None
+    browser_use_api_key: str | None = None
+    browser_use_base_url: str | None = None
+    browser_use_profile_id: str | None = None
+    browser_use_proxy_country_code: str | None = None
+    browser_use_keep_alive: bool = False
+    browser_use_enable_recording: bool = False
 
     # 日志
     log_level: str = "INFO"
@@ -155,6 +163,7 @@ class Settings(BaseSettings):
         "browser_executable_path",
         "browser_user_data_dir",
         "browser_storage_state",
+        "searlo_api_key",
         mode="before",
     )
     @classmethod
@@ -170,6 +179,26 @@ class Settings(BaseSettings):
         """将空的浏览器 channel 配置视为未配置。"""
         if isinstance(value, str) and not value.strip():
             return None
+        return value
+
+    @field_validator(
+        "browser_provider",
+        "browser_use_api_key",
+        "browser_use_base_url",
+        "browser_use_profile_id",
+        "browser_use_proxy_country_code",
+        mode="before",
+    )
+    @classmethod
+    def _empty_string_as_none_or_default(cls, value: object, info: object) -> object:
+        """将空字符串规范为未配置，provider 保留默认值。"""
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                if getattr(info, "field_name", "") == "browser_provider":
+                    return "local"
+                return None
+            return stripped
         return value
 
     @model_validator(mode="after")

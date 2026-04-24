@@ -11,6 +11,7 @@ from hawker_agent.browser.actions import (
     _build_search_url,
     _log_js_summary,
     browser_download,
+    nav as action_nav,
 )
 from hawker_agent.browser.netlog import NETLOG_INJECT_JS
 from hawker_agent.models.state import CodeAgentState
@@ -155,6 +156,25 @@ class TestBrowserSession:
         assert cfg.browser_user_data_dir is None
         assert cfg.browser_storage_state is None
 
+    def test_empty_cloud_browser_settings_are_normalized(self) -> None:
+        from hawker_agent.config import Settings
+
+        cfg = Settings(
+            openai_api_key="test",
+            model_name="test-model",
+            browser_provider="",
+            browser_use_api_key="",
+            browser_use_base_url="",
+            browser_use_profile_id="",
+            browser_use_proxy_country_code="",
+        )
+
+        assert cfg.browser_provider == "local"
+        assert cfg.browser_use_api_key is None
+        assert cfg.browser_use_base_url is None
+        assert cfg.browser_use_profile_id is None
+        assert cfg.browser_use_proxy_country_code is None
+
     @pytest.mark.asyncio
     async def test_aenter_passes_browser_profile_options(self) -> None:
         with patch("hawker_agent.browser.session.get_settings") as mock_settings, \
@@ -194,6 +214,81 @@ class TestBrowserSession:
             )
             mock_session_cls.assert_called_once_with(browser_profile=mock_profile)
             mock_upstream.start.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_aenter_bootstraps_browser_use_cloud_session(self) -> None:
+        with patch("hawker_agent.browser.session.get_settings") as mock_settings, \
+             patch("hawker_agent.browser.session._server_browser_overrides", return_value={}), \
+             patch("hawker_agent.browser.session.httpx.AsyncClient") as mock_http_client_cls, \
+             patch("hawker_agent.browser.session.BrowserProfile") as mock_profile_cls, \
+             patch("hawker_agent.browser.session._UpstreamBrowserSession") as mock_session_cls:
+            mock_settings.return_value = MagicMock(
+                headless=False,
+                browser_provider="browser_use_cloud",
+                browser_executable_path=None,
+                browser_user_data_dir=None,
+                browser_profile_directory="Default",
+                browser_storage_state=None,
+                browser_channel=None,
+                browser_cdp_url=None,
+                browser_use_api_key="cloud-key",
+                browser_use_base_url="https://api.browser-use.local",
+                browser_use_profile_id="profile-123",
+                browser_use_proxy_country_code="us",
+                browser_use_keep_alive=True,
+                browser_use_enable_recording=True,
+            )
+
+            mock_response = MagicMock()
+            mock_response.raise_for_status.return_value = None
+            mock_response.json.return_value = {
+                "id": "sess_123",
+                "cdpUrl": "wss://cdp.example/ws",
+                "liveUrl": "https://live.example",
+            }
+            mock_http_client = MagicMock()
+            mock_http_client.post = AsyncMock(return_value=mock_response)
+            mock_http_client.patch = AsyncMock(return_value=MagicMock())
+            mock_http_client.aclose = AsyncMock()
+            mock_http_client_cls.return_value = mock_http_client
+
+            mock_profile = MagicMock()
+            mock_profile_cls.return_value = mock_profile
+            mock_upstream = MagicMock()
+            mock_upstream.start = AsyncMock()
+            mock_upstream.stop = AsyncMock()
+            mock_session_cls.return_value = mock_upstream
+
+            from hawker_agent.browser.session import BrowserSession
+
+            session = BrowserSession()
+            await session.__aenter__()
+            await session.__aexit__(None, None, None)
+
+            mock_http_client_cls.assert_called_once_with(
+                base_url="https://api.browser-use.local",
+                headers={"X-Browser-Use-API-Key": "cloud-key"},
+                timeout=30.0,
+            )
+            mock_http_client.post.assert_awaited_once_with(
+                "/browsers",
+                json={
+                    "profileId": "profile-123",
+                    "proxyCountryCode": "us",
+                    "enableRecording": True,
+                },
+            )
+            mock_profile_cls.assert_called_once_with(
+                headless=False,
+                profile_directory="Default",
+                cdp_url="wss://cdp.example/ws",
+                auto_download_pdfs=False,
+            )
+            mock_http_client.patch.assert_awaited_once_with(
+                "/browsers/sess_123",
+                json={"action": "stop"},
+            )
+            mock_http_client.aclose.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -297,6 +392,29 @@ async def test_browser_download_reuses_registry_entry(tmp_path: Path) -> None:
     assert second["requested_filename"] == "second.pdf"
     assert len(state.download_registry) == 1
     assert state.list_downloaded_files()[0]["path"] == str((session.target_dir / "first.pdf").resolve())
+
+
+@pytest.mark.asyncio
+async def test_nav_skip_mode_avoids_dom_capture() -> None:
+    session = MagicMock()
+    session.raw = MagicMock()
+    session.raw.navigate_to = AsyncMock()
+    session.netlog_cursor = 9
+
+    async def _fast_sleep(_: float) -> None:
+        return None
+
+    with patch("hawker_agent.browser.actions.ensure_network_monitor", AsyncMock()), \
+         patch("hawker_agent.browser.actions.asyncio.sleep", _fast_sleep), \
+         patch("hawker_agent.browser.actions._capture_dom_state", AsyncMock(side_effect=AssertionError("should not capture dom"))), \
+         patch("hawker_agent.browser.actions._capture_navigation_meta", AsyncMock(return_value={"title": "目标页", "url": "https://example.com/final"})):
+        result = await action_nav(session, "https://example.com/start", mode="skip")
+
+    session.raw.navigate_to.assert_awaited_once_with("https://example.com/start")
+    assert session.netlog_cursor == 0
+    assert result.summary == "[OK] 目标页 | DOM=skipped | URL 已变(redirected): https://example.com/final"
+    assert result.snapshot["title"] == "目标页"
+    assert result.snapshot["url"] == "https://example.com/final"
 
 
 def test_download_registry_ignores_noisy_query_params(tmp_path: Path) -> None:
@@ -488,6 +606,18 @@ class TestBrowserToolsRegistration:
         assert "点击" in desc
         assert "输入" in desc
         assert "侦察" in desc
+
+    def test_nav_description_exposes_mode_guidance_for_llm(self) -> None:
+        registry = ToolRegistry()
+        mock_session = MagicMock()
+        mock_history = MagicMock()
+        register_browser_tools(registry, mock_session, mock_history)
+        desc = registry.build_description()
+        nav_line = next(line for line in desc.splitlines() if "nav(" in line)
+        assert "mode" in nav_line
+        assert "skip" in nav_line
+        assert "summary" in nav_line
+        assert "full" in nav_line
 
     def test_nav_signature_no_session(self) -> None:
         registry = ToolRegistry()

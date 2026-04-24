@@ -54,12 +54,19 @@ _CONFIG_GROUPS: dict[str, list[str]] = {
     ],
     "Browser": [
         "headless",
+        "browser_provider",
         "browser_executable_path",
         "browser_user_data_dir",
         "browser_profile_directory",
         "browser_storage_state",
         "browser_channel",
         "browser_cdp_url",
+        "browser_use_api_key",
+        "browser_use_base_url",
+        "browser_use_profile_id",
+        "browser_use_proxy_country_code",
+        "browser_use_keep_alive",
+        "browser_use_enable_recording",
     ],
     "Storage & Logs": [
         "scrape_dir",
@@ -72,6 +79,7 @@ _CONFIG_GROUPS: dict[str, list[str]] = {
         "langfuse_base_url",
         "langfuse_environment",
         "langfuse_release",
+        "searlo_api_key",
     ],
 }
 
@@ -219,8 +227,15 @@ SMALL_MODEL_NAME=
 MAX_STEPS=30
 MAX_TOTAL_TOKENS=200000
 HEADLESS=false
-SCRAPE_DIR=hawker_file
+# Browser mode: local | browser_use_cloud
+BROWSER_PROVIDER=local
+# For browser_use_cloud, set BROWSER_USE_API_KEY and usually BROWSER_USE_PROFILE_ID.
+BROWSER_USE_API_KEY=
+BROWSER_USE_PROFILE_ID=
+BROWSER_USE_PROXY_COUNTRY_CODE=us
+SCRAPE_DIR=
 LOG_LEVEL=INFO
+SEARLO_API_KEY=
 """
 
 
@@ -242,12 +257,19 @@ def _default_config_values() -> dict[str, str]:
         "OBSERVER_ENABLED": "true",
         "OBSERVER_REASONING_EFFORT": "",
         "HEADLESS": "false",
+        "BROWSER_PROVIDER": "local",
         "BROWSER_EXECUTABLE_PATH": "",
         "BROWSER_USER_DATA_DIR": "",
         "BROWSER_PROFILE_DIRECTORY": "Default",
         "BROWSER_STORAGE_STATE": "",
         "BROWSER_CHANNEL": "",
         "BROWSER_CDP_URL": "",
+        "BROWSER_USE_API_KEY": "",
+        "BROWSER_USE_BASE_URL": "",
+        "BROWSER_USE_PROFILE_ID": "",
+        "BROWSER_USE_PROXY_COUNTRY_CODE": "",
+        "BROWSER_USE_KEEP_ALIVE": "false",
+        "BROWSER_USE_ENABLE_RECORDING": "false",
         "SCRAPE_DIR": "",
         "KNOWLEDGE_DB_PATH": "",
         "LOG_LEVEL": "INFO",
@@ -256,6 +278,7 @@ def _default_config_values() -> dict[str, str]:
         "LANGFUSE_BASE_URL": "",
         "LANGFUSE_ENVIRONMENT": "development",
         "LANGFUSE_RELEASE": "",
+        "SEARLO_API_KEY": "",
     }
 
 
@@ -299,12 +322,24 @@ def _render_env_values(values: dict[str, str]) -> str:
         "",
         "# Browser",
         f"HEADLESS={values.get('HEADLESS', 'false')}",
+        "# Choose `local` for local Chromium/Chrome, or `browser_use_cloud` to create",
+        "# a Browser Use Cloud session automatically and connect through its CDP URL.",
+        f"BROWSER_PROVIDER={values.get('BROWSER_PROVIDER', 'local')}",
         f"BROWSER_EXECUTABLE_PATH={values.get('BROWSER_EXECUTABLE_PATH', '')}",
         f"BROWSER_USER_DATA_DIR={values.get('BROWSER_USER_DATA_DIR', '')}",
         f"BROWSER_PROFILE_DIRECTORY={values.get('BROWSER_PROFILE_DIRECTORY', 'Default')}",
         f"BROWSER_STORAGE_STATE={values.get('BROWSER_STORAGE_STATE', '')}",
         f"BROWSER_CHANNEL={values.get('BROWSER_CHANNEL', '')}",
+        "# Use BROWSER_CDP_URL directly if you already have an existing browser endpoint.",
         f"BROWSER_CDP_URL={values.get('BROWSER_CDP_URL', '')}",
+        "# Browser Use Cloud settings. PROFILE_ID is strongly recommended so login",
+        "# state and cookies can persist across sessions.",
+        f"BROWSER_USE_API_KEY={values.get('BROWSER_USE_API_KEY', '')}",
+        f"BROWSER_USE_BASE_URL={values.get('BROWSER_USE_BASE_URL', '')}",
+        f"BROWSER_USE_PROFILE_ID={values.get('BROWSER_USE_PROFILE_ID', '')}",
+        f"BROWSER_USE_PROXY_COUNTRY_CODE={values.get('BROWSER_USE_PROXY_COUNTRY_CODE', '')}",
+        f"BROWSER_USE_KEEP_ALIVE={values.get('BROWSER_USE_KEEP_ALIVE', 'false')}",
+        f"BROWSER_USE_ENABLE_RECORDING={values.get('BROWSER_USE_ENABLE_RECORDING', 'false')}",
         "",
         "# Storage & logs",
         f"SCRAPE_DIR={values.get('SCRAPE_DIR', '')}",
@@ -317,6 +352,7 @@ def _render_env_values(values: dict[str, str]) -> str:
         f"LANGFUSE_BASE_URL={values.get('LANGFUSE_BASE_URL', '')}",
         f"LANGFUSE_ENVIRONMENT={values.get('LANGFUSE_ENVIRONMENT', 'development')}",
         f"LANGFUSE_RELEASE={values.get('LANGFUSE_RELEASE', '')}",
+        f"SEARLO_API_KEY={values.get('SEARLO_API_KEY', '')}",
         "",
     ]
     return "\n".join(lines)

@@ -30,6 +30,29 @@ _BLOCKED_IMPORTS = frozenset({
 })
 
 
+def _snapshot_session(namespace: HawkerNamespace) -> tuple[dict[str, object] | None, str | None]:
+    """为 session 创建可靠快照；失败时返回可读错误而不是退化为浅拷贝。
+
+    事务回滚必须建立在深拷贝快照之上。若 session 中混入不可深拷贝对象，
+    则本步应 fail closed，避免执行后无法可靠回滚。
+    """
+    try:
+        return copy.deepcopy(namespace.session), None
+    except Exception as exc:
+        problematic: list[str] = []
+        for name, value in namespace.session.items():
+            try:
+                copy.deepcopy(value)
+            except Exception as item_exc:
+                problematic.append(f"{name} ({type(value).__name__}: {item_exc})")
+
+        details = "；".join(problematic[:5]) if problematic else str(exc)
+        return None, (
+            "session 快照失败，已拒绝执行以避免不可靠回滚。"
+            f" 请先移除或重建不可安全持久化的变量。问题变量: {details}"
+        )
+
+
 def _check_imports(code: str) -> str | None:
     """检查代码是否尝试导入任何被禁止的模块。
 
@@ -131,12 +154,13 @@ async def execute(
             buf = io.StringIO()
             logger.info("代码执行开始: chars=%d", len(code))
 
-            # 事务快照：session 层深拷贝
-            try:
-                session_snapshot = copy.deepcopy(namespace.session)
-            except Exception as e:
-                logger.debug("Namespace 快照失败 (可能包含不可 pickle 的对象): %s", e)
-                session_snapshot = namespace.session.copy() # 降级为浅拷贝
+            # 事务快照：必须可深拷贝，否则拒绝执行，避免出现不可回滚的状态污染。
+            session_snapshot, snapshot_error = _snapshot_session(namespace)
+            if snapshot_error:
+                logger.warning("Namespace 快照失败，已拒绝执行: %s", snapshot_error)
+                namespace.rollback()
+                return f"[执行错误]\n{snapshot_error}"
+            assert session_snapshot is not None
 
             # 0. Static import guard
             import_err = _check_imports(code)

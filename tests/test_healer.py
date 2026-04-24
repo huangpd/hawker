@@ -2,11 +2,25 @@ from __future__ import annotations
 
 import pytest
 
-from hawker_agent.agent.healer import estimate_change_ratio
+from hawker_agent.agent.healer import build_healing_messages, estimate_change_ratio
 from hawker_agent.models.state import CodeAgentState
 
 
 class TestHealer:
+    def test_build_healing_messages_includes_tool_guide(self) -> None:
+        messages = build_healing_messages(
+            code="items = []\nobserve(str(len(itemz)))",
+            error="[执行错误]\nNameError: name 'itemz' is not defined",
+            namespace_snapshot={"items": "list(len=0)"},
+        )
+
+        assert len(messages) == 2
+        user_prompt = messages[1]["content"]
+        assert "[工具契约与系统约束]" in user_prompt
+        assert "`fetch(url, ..., parse='json'|'text')`" in user_prompt
+        assert "`append_items(items)`" in user_prompt
+        assert "`browser_download(url, filename=None)`" in user_prompt
+
     def test_change_ratio_small_for_local_fix(self) -> None:
         original = "items = []\nobserve(str(len(itemz)))"
         candidate = "items = []\nobserve(str(len(items)))"

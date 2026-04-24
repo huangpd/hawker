@@ -35,6 +35,26 @@ _NON_HEALABLE_HINTS = (
 _MAX_HEAL_CHANGE_RATIO = 0.55
 
 
+def build_healer_tool_guide() -> str:
+    """Return a compact tool and runtime contract guide for Healing.
+
+    The healer only sees the current cell, so it needs a concise reminder of
+    the tools and invariants it must preserve. Keep this short and focused on
+    the highest-frequency failure modes.
+    """
+    return (
+        "- `observe(message)`: emit a short observation; use this instead of `print(...)` for formal feedback.\n"
+        "- `append_items(items)`: the only persistence path for structured results; append dict/list payloads here.\n"
+        "- `final_answer(answer)`: finish the task with summary text; do not dump every raw item again.\n"
+        "- `fetch(url, ..., parse='json'|'text')`: preferred HTTP/API entry; `preview_chars` only affects observation preview, not the returned body.\n"
+        "- `search_web(q, ...)`: preferred tool for generic web search results; use browser search only when page interaction is necessary.\n"
+        "- `js(code, *args, args=[...])`: supports both positional args and `args=[...]`; `code` must evaluate to a JavaScript function when args are passed.\n"
+        "- `browser_download(url, filename=None)`: downloads to the current run dir and reuses the same normalized URL within this run.\n"
+        "- `click_index(i)`: click DOM elements marked as `[i_*]`; do not reuse old indexes after page navigation.\n"
+        "- Keep fixes local: do not rewrite the task plan, do not invent new schemas, do not create alternate save paths, and do not reinitialize globals like `all_items` or `run_dir`."
+    )
+
+
 def is_healable_error(error_text: str) -> bool:
     """判断当前错误是否适合交给廉价模型做局部修复。"""
     if not error_text or "[执行错误]" not in error_text:
@@ -63,6 +83,7 @@ def build_namespace_snapshot(namespace: HawkerNamespace, max_entries: int = 30) 
 def build_healing_messages(*, code: str, error: str, namespace_snapshot: dict[str, str]) -> list[dict[str, str]]:
     """构造局部代码修复请求。"""
     snapshot_text = json.dumps(namespace_snapshot, ensure_ascii=False, indent=2)
+    tool_guide = build_healer_tool_guide()
     return [
         {
             "role": "system",
@@ -79,6 +100,7 @@ def build_healing_messages(*, code: str, error: str, namespace_snapshot: dict[st
             "role": "user",
             "content": (
                 "请修复下面这段代码。\n\n"
+                f"[工具契约与系统约束]\n{tool_guide}\n\n"
                 f"[可用变量摘要]\n{snapshot_text}\n\n"
                 f"[原代码]\n```python\n{code}\n```\n\n"
                 f"[报错]\n{error}\n"

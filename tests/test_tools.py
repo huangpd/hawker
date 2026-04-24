@@ -307,14 +307,63 @@ def test_register_data_tools() -> None:
     register_data_tools(reg)
     assert "ensure" in reg
     assert "parse_http_response" in reg
-    
-    # Check sync/async split
     sync_caps = reg.build_capabilities_list("sync")
     async_caps = reg.build_capabilities_list("async")
     assert "ensure" not in sync_caps
     assert "parse_http_response" not in sync_caps
     assert "await" not in sync_caps
     assert "asyncio.sleep" in async_caps
+
+
+@pytest.mark.asyncio
+async def test_search_web_uses_searlo_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    from hawker_agent.tools.http_tools import search_web
+
+    captured: dict[str, object] = {}
+
+    class DummyResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "success": True,
+                "searchInformation": {"query": "machine learning"},
+                "items": [
+                    {
+                        "rank": 1,
+                        "title": "Intro",
+                        "link": "https://example.com/ml",
+                        "snippet": "Machine learning is a subset of AI...",
+                    }
+                ],
+            }
+
+    class DummyClient:
+        async def get(self, url: str, **kwargs: object) -> DummyResponse:
+            captured["url"] = url
+            captured["kwargs"] = kwargs
+            return DummyResponse()
+
+    monkeypatch.setenv("SEARLO_API_KEY", "searlo-test-key")
+
+    async def fake_get_client() -> DummyClient:
+        return DummyClient()
+
+    monkeypatch.setattr("hawker_agent.tools.http_tools._get_client", fake_get_client)
+    from hawker_agent.config import get_settings
+
+    get_settings.cache_clear()
+    try:
+        result = await search_web("machine learning", limit=3, page=2, gl="us")
+    finally:
+        get_settings.cache_clear()
+
+    assert result["success"] is True
+    assert captured["url"] == "https://api.searlo.tech/api/v1/search/web"
+    kwargs = captured["kwargs"]
+    assert kwargs["headers"] == {"x-api-key": "searlo-test-key"}
+    assert kwargs["params"] == {"q": "machine learning", "limit": 3, "page": 2, "gl": "us"}
 
 
 def test_hidden_tools_do_not_appear_in_prompt_capabilities() -> None:
@@ -501,6 +550,32 @@ def test_save_result_json_reconciles_missing_downloaded_files(tmp_path: Path) ->
     assert data["items"][0]["downloaded_file"] == "exists.pdf"
     assert "downloaded_file" not in data["items"][1]
     assert data["items"][1]["download_status"] == "missing_on_disk"
+
+
+def test_normalize_items_trims_verbose_pdf_file_payload() -> None:
+    items = normalize_items(
+        {
+            "title": "paper",
+            "pdf_file": {
+                "ok": True,
+                "url": "https://arxiv.org/pdf/2604.21608v1",
+                "requested_filename": "paper.pdf",
+                "filename": "paper.pdf",
+                "path": "/tmp/paper.pdf",
+                "size": 123,
+                "method": "curl_cffi",
+            },
+        }
+    )
+
+    pdf_file = items[0]["pdf_file"]
+    assert pdf_file["url"] == "https://arxiv.org/pdf/2604.21608v1"
+    assert pdf_file["filename"] == "paper.pdf"
+    assert pdf_file["path"] == "/tmp/paper.pdf"
+    assert pdf_file["size"] == 123
+    assert "ok" not in pdf_file
+    assert "requested_filename" not in pdf_file
+    assert "method" not in pdf_file
 
 
 def test_normalize_final_artifact_keeps_business_text_unchanged() -> None:

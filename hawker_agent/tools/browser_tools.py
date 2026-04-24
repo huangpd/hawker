@@ -81,7 +81,7 @@ def register_browser_tools(
             requested_mode (str | None): 用户请求的模式。
 
         返回:
-            str: 实际使用的模式，仅为 summary、diff、full 之一。
+            str: 实际使用的模式，仅为 skip、summary、diff、full 之一。
         """
         normalized = (requested_mode or "auto").lower()
         has_snapshot = _previous_snapshot() is not None
@@ -91,10 +91,10 @@ def register_browser_tools(
         def _guard_mode(preferred: str) -> str:
             if not sop_guard_active:
                 return preferred
-            if preferred != "full":
-                return preferred
             if action_name in {"nav", "nav_search"}:
-                guarded = "summary"
+                guarded = "skip"
+            elif preferred != "full":
+                return preferred
             elif action_name == "dom_state":
                 guarded = "diff" if has_snapshot else "summary"
             else:
@@ -108,7 +108,7 @@ def register_browser_tools(
             )
             return guarded
 
-        if normalized in {"summary", "diff", "full"}:
+        if normalized in {"skip", "summary", "diff", "full"}:
             return _guard_mode(normalized)
 
         if action_name in {"nav", "nav_search"}:
@@ -158,7 +158,7 @@ def register_browser_tools(
         return summary.startswith("[失败]")
 
     async def nav(url: str, mode: str = "auto") -> str:
-        """导航到 URL，返回摘要字符串；页面上下文会写入下一轮 DOM Workspace。"""
+        """导航到目标 URL 并返回结果摘要。`mode` 可选：`auto` 让系统按当前状态选择最省 token 的模式；`skip` 只导航并做轻量页面确认，不读取 DOM；`summary` 返回轻量页面摘要；`diff` 返回相对上一次页面快照的变化摘要；`full` 返回完整 DOM。命中高置信 SOP 且下一步直接提取时，优先用 `mode="skip"`。"""
         effective_mode = _resolve_mode("nav", mode)
         result = await actions.nav(
             session,
@@ -179,7 +179,7 @@ def register_browser_tools(
         return _handle_dom_result(result)
 
     async def nav_search(query: str, engine: str = "google", mode: str = "auto") -> str:
-        """执行搜索并返回摘要字符串；结果页上下文会写入下一轮 DOM Workspace。"""
+        """用搜索引擎打开结果页；仅在 `search_web(...)` 不足或必须依赖浏览器交互时再用它。"""
         effective_mode = _resolve_mode("nav_search", mode)
         result = await actions.nav_search(
             session,
@@ -208,7 +208,7 @@ def register_browser_tools(
         network: bool | None = None,
         cookies: bool | None = None,
     ) -> dict[str, Any]:
-        """统一页面侦察入口，按 ``include=`` 组合 DOM、抓包、Cookie、选择器。
+        """统一页面侦察入口；优先用它一次拿到 DOM 摘要、抓包、Cookie 和选择器，而不是分散多次探测。
 
         用法示例::
 

@@ -340,11 +340,11 @@ class TestBrowserToolModes:
         nav = registry.as_namespace_dict()["nav"]
 
         async def fake_nav(*args, **kwargs):
-            assert kwargs["mode"] == "summary"
+            assert kwargs["mode"] == "skip"
             return DomActionResult(
-                summary="[OK] 页面 | 交互元素 1 | DOM=summary",
+                summary="[OK] 页面 | DOM=skipped",
                 dom=None,
-                snapshot={"title": "页面", "interactive_count": 1},
+                snapshot={"title": "页面", "interactive_count": 0},
             )
 
         from hawker_agent.tools import browser_tools as browser_tools_module
@@ -356,4 +356,4 @@ class TestBrowserToolModes:
         finally:
             browser_tools_module.actions.nav = original
 
-        assert "DOM=summary" in result
+        assert "DOM=skipped" in result

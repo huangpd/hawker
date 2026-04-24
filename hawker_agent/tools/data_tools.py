@@ -59,7 +59,19 @@ def normalize_items(items: object) -> list[dict]:
         items = [items]
     if not isinstance(items, list):
         raise TypeError(f"items 必须是 list/dict/JSON 字符串，收到 {type(items).__name__}")
-    return clean_items(items)
+    def _trim(value: object) -> object:
+        if isinstance(value, list):
+            return [_trim(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        value = {key: _trim(subvalue) for key, subvalue in value.items()}
+        if {"url", "filename", "path", "size"}.issubset(value.keys()):
+            value.pop("ok", None)
+            value.pop("requested_filename", None)
+            value.pop("method", None)
+        return value
+
+    return clean_items([_trim(item) for item in items])
 
 
 def summarize_json(data: object) -> str:

@@ -3,17 +3,20 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import shutil
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, unquote
 
 import httpx
-from browser_use.browser.profile import BrowserProfile
+from browser_use.browser.profile import BrowserProfile, ProxySettings
 from browser_use.browser.session import BrowserSession as _UpstreamBrowserSession
 
 from hawker_agent.config import get_settings
 
 logger = logging.getLogger(__name__)
 _BROWSER_USE_V3_BASE_URL = "https://api.browser-use.com/api/v3"
+_TEMP_PROFILE_PREFIX = "browser-use-user-data-dir-"
 
 
 def _is_linux_server_without_display() -> bool:
@@ -31,6 +34,23 @@ def _is_root_user() -> bool:
         return geteuid() == 0
     except OSError:
         return False
+
+
+def _is_running_in_container() -> bool:
+    """Detect common container environments that need safer Chromium flags."""
+    if platform.system() != "Linux":
+        return False
+    if os.environ.get("container") or os.environ.get("KUBERNETES_SERVICE_HOST"):
+        return True
+    if os.path.exists("/.dockerenv"):
+        return True
+    try:
+        if os.path.exists("/proc/1/cgroup"):
+            with open("/proc/1/cgroup", "r", encoding="utf-8") as fh:
+                return "docker" in fh.read()
+    except OSError:
+        return False
+    return False
 
 
 def _server_browser_overrides() -> dict[str, object]:
@@ -53,11 +73,38 @@ def _server_browser_overrides() -> dict[str, object]:
     if _is_root_user():
         overrides["chromium_sandbox"] = False
         extra_args.append("--no-sandbox")
+        extra_args.append("--disable-setuid-sandbox")
+
+    if _is_running_in_container():
+        extra_args.extend([
+            "--disable-gpu",
+            "--single-process",
+        ])
 
     if extra_args:
-        overrides["args"] = extra_args
+        overrides["args"] = list(dict.fromkeys(extra_args))
 
     return overrides
+
+
+def _build_proxy_settings(proxy_url: str | None) -> ProxySettings | None:
+    """Parse a proxy URL into browser-use ProxySettings."""
+    if not isinstance(proxy_url, str):
+        return None
+    raw = proxy_url.strip()
+    if not raw:
+        return None
+    parsed = urlsplit(raw)
+    if not parsed.scheme or not parsed.hostname or parsed.port is None:
+        raise RuntimeError(f"BROWSER_PROXY 格式无效: {raw}")
+    server = f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
+    username = unquote(parsed.username) if parsed.username else None
+    password = unquote(parsed.password) if parsed.password else None
+    return ProxySettings(
+        server=server,
+        username=username,
+        password=password,
+    )
 
 
 class BrowserSession:
@@ -67,8 +114,6 @@ class BrowserSession:
 
     Attributes:
         target_dir (Path | None): 任务产物的最终保存目录。
-        netlog_installed (bool): 是否已安装网络监听脚本。
-        netlog_cursor (int): 网络请求日志的读取游标。
     """
 
     def __init__(self, headless: bool | None = None) -> None:
@@ -89,6 +134,7 @@ class BrowserSession:
             "storage_state": settings.browser_storage_state,
             "channel": settings.browser_channel,
             "cdp_url": settings.browser_cdp_url,
+            "proxy": _build_proxy_settings(settings.browser_proxy),
             # 显式下载由 curl-cffi 完成，关闭 browser-use 的 PDF 自动下载避免竞争。
             "auto_download_pdfs": False,
         }
@@ -96,10 +142,8 @@ class BrowserSession:
         self._session: _UpstreamBrowserSession | None = None
         self._cloud_http_client: httpx.AsyncClient | None = None
         self._cloud_session: dict[str, Any] | None = None
+        self._temp_user_data_dir: Path | None = None
         self.target_dir: Path | None = None  # 本次任务产物的最终保存目录
-        # 内部状态
-        self.netlog_installed: bool = False
-        self.netlog_cursor: int = 0
 
     async def __aenter__(self) -> BrowserSession:
         """进入异步上下文，启动浏览器并准备下载目录。
@@ -117,8 +161,14 @@ class BrowserSession:
             profile_kwargs["cdp_url"] = self._require_cloud_cdp_url()
 
         profile = BrowserProfile(**profile_kwargs)
+        temp_user_data_dir = getattr(profile, "user_data_dir", None)
+        if isinstance(temp_user_data_dir, (str, Path)):
+            candidate = Path(temp_user_data_dir)
+            if _TEMP_PROFILE_PREFIX in candidate.name:
+                self._temp_user_data_dir = candidate
         self._session = _UpstreamBrowserSession(browser_profile=profile)
         await self._session.start()
+        await self._apply_browser_overrides()
 
         logger.info(
             "浏览器会话已启动 (headless=%s, chromium_sandbox=%s)",
@@ -163,9 +213,16 @@ class BrowserSession:
             except Exception:
                 logger.debug("browser-use cloud client 关闭异常", exc_info=True)
             self._cloud_http_client = None
-            
-        self.netlog_installed = False
-        self.netlog_cursor = 0
+
+        if self._temp_user_data_dir and self._temp_user_data_dir.exists():
+            try:
+                shutil.rmtree(self._temp_user_data_dir, ignore_errors=False)
+                logger.info("已清理临时浏览器 profile: %s", self._temp_user_data_dir)
+            except Exception:
+                logger.debug("临时浏览器 profile 清理异常", exc_info=True)
+            finally:
+                self._temp_user_data_dir = None
+
         logger.info("浏览器会话已关闭")
 
     @property
@@ -218,3 +275,16 @@ class BrowserSession:
         if not cdp_url:
             raise RuntimeError("browser-use cloud session 未返回 cdp_url")
         return str(cdp_url)
+
+    async def _apply_browser_overrides(self) -> None:
+        """Apply post-start browser overrides such as timezone."""
+        if not self._session:
+            return
+        raw_timezone = self._settings.browser_timezone_id
+        timezone_id = raw_timezone.strip() if isinstance(raw_timezone, str) else ""
+        if timezone_id:
+            cdp_session = await self._session.get_or_create_cdp_session(target_id=None, focus=False)
+            await cdp_session.cdp_client.send.Emulation.setTimezoneOverride(
+                params={"timezoneId": timezone_id},
+                session_id=cdp_session.session_id,
+            )

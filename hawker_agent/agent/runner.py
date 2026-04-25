@@ -9,7 +9,7 @@ from typing import Literal
 
 from hawker_agent.agent.artifact import normalize_final_artifact
 from hawker_agent.agent.evaluator import extract_task_requirements
-from hawker_agent.agent.final_delivery import resolve_final_items
+from hawker_agent.agent.final_delivery import replace_state_items, resolve_final_items
 from hawker_agent.agent.namespace import HawkerNamespace, build_namespace
 from hawker_agent.agent.prompts import build_system_prompt
 from hawker_agent.agent.step_runtime import run_agent_step
@@ -36,6 +36,14 @@ from hawker_agent.tools.http_tools import close_http_clients
 from hawker_agent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
+_OBSERVER_THREADS: list[threading.Thread] = []
+
+
+def wait_for_observer_sidecars(timeout: float | None = None) -> None:
+    """Wait for background Observer sidecar threads and clear completed handles."""
+    for thread in list(_OBSERVER_THREADS):
+        thread.join(timeout=timeout)
+    _OBSERVER_THREADS[:] = [thread for thread in _OBSERVER_THREADS if thread.is_alive()]
 
 
 async def _start_observer_sidecar(
@@ -99,6 +107,7 @@ async def _start_observer_sidecar(
         daemon=False,
     )
     thread.start()
+    _OBSERVER_THREADS.append(thread)
     logger.info("Observer 已转入后台生成，不阻塞结果返回: run_id=%s domain=%s", source_run_id, evidence.domain)
 
 
@@ -221,8 +230,7 @@ def _build_result(
             len(state.items),
             len(export_items),
         )
-        state.items.clear()
-        state.items.append(export_items)
+        replace_state_items(state, export_items)
 
     # 结果恢复逻辑（当任务非正常结束时生成总结）
     if stop_reason != "done" and not final_answer:
@@ -384,12 +392,14 @@ async def run(
                 from hawker_agent.tools.browser_tools import register_browser_tools
                 from hawker_agent.tools.http_tools import register_http_tools
                 from hawker_agent.tools.data_tools import register_data_tools
+                from hawker_agent.tools.obs_tools import register_obs_tools
                 from hawker_agent.agent.namespace import register_core_actions
                 
                 register_core_actions(reg, state, str(run_dir))
                 register_browser_tools(reg, br, history, state)
                 register_http_tools(reg)
                 register_data_tools(reg)
+                register_obs_tools(reg)
 
                 # 2. 生成并注入最终提示词 (此时分类生成才准确)
                 full_system_prompt = build_system_prompt(
@@ -397,7 +407,7 @@ async def run(
                     sync_capabilities=reg.build_capabilities_list("sync"),
                     instructions=instructions
                 )
-                
+                print(full_system_prompt)
                 history.system_prompt = full_system_prompt
 
                 # 构建代码执行命名空间

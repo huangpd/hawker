@@ -1,47 +1,35 @@
 # Example Browser-Required Site — Scraping & Data Extraction
 
-`https://browser-only.example.org` — key data is rendered from live page state and does not have a stable public JSON endpoint. **Browser interaction is required.**
+`https://browser-only.example.org` — data is rendered from live page state. **Browser interaction is required.**
 
 ## Do this first
 
-Navigate to the page, wait for the listing cards to render, and inspect the smallest useful DOM view before requesting a full snapshot.
+Navigate, wait for cards, then use the smallest useful DOM/JS extraction.
 
 ## Common workflows
 
-### Extract visible listing cards
+### Extract visible cards
 
 ```python
 await nav("https://browser-only.example.org/listings", mode="summary")
-cards_json = await js("""
-(function(){
-  const cards = Array.from(document.querySelectorAll(".listing-card"));
-  return JSON.stringify(cards.slice(0, 5).map(card => ({
-    title: card.querySelector(".title")?.innerText?.trim() || "",
-    href: card.querySelector("a")?.href || "",
-    price: card.querySelector(".price")?.innerText?.trim() || ""
-  })));
-})()
-""")
-print(cards_json[:160])
-# Confirmed output (2026-04-20): [{"title":"Demo Listing","href":"https://browser-only.example.org/item/1","price":"$199"}]
+cards = await js("""() => Array.from(document.querySelectorAll(".listing-card")).slice(0, 5).map(card => ({
+  title: card.querySelector(".title")?.innerText?.trim() || "",
+  href: card.querySelector("a")?.href || "",
+  price: card.querySelector(".price")?.innerText?.trim() || ""
+}))""")
+print(len(cards), cards[0]["title"] if cards else None)
+# Confirmed output (2026-04-20): 5 Demo Listing
 ```
 
-### Paginate with the next-page control
+### Paginate
 
 ```python
 await click("a[rel='next']")
 await dom_state(mode="diff")
-cards_json = await js("""
-(function(){
-  return JSON.stringify(Array.from(document.querySelectorAll('.listing-card')).length);
-})()
-""")
-print(cards_json)
-# Confirmed output (2026-04-20): "25"
+# Confirmed output (2026-04-20): page changed, listing cards refreshed
 ```
 
 ## Gotchas
 
-- Do not invent an API path if the evidence only shows DOM-based extraction.
-- Prefer `summary` or `diff` before asking for `full` DOM.
-- Re-acquire selectors after navigation if the page structure changes.
+- Do not invent an API path if evidence only supports DOM extraction.
+- Re-acquire selectors after navigation or major DOM refresh.

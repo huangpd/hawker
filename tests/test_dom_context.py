@@ -247,7 +247,7 @@ class TestBrowserToolModes:
         assert history.inject_browser_context.call_count == 1
         assert state.last_dom_snapshot == {"title": "旧页", "interactive_count": 2}
 
-    async def test_inspect_page_combines_dom_network_cookies_and_selector(self) -> None:
+    async def test_inspect_page_combines_dom_cookies_and_selector(self) -> None:
         registry = ToolRegistry()
         history = MagicMock()
         session = MagicMock()
@@ -266,10 +266,6 @@ class TestBrowserToolModes:
                 snapshot={"title": "结果页", "interactive_count": 4},
             )
 
-        async def fake_network_log(*args, **kwargs):
-            assert args[2] is True
-            return [{"url": "https://example.com/api"}]
-
         async def fake_get_cookies(*args, **kwargs):
             return [{"name": "sid", "value": "abc"}]
 
@@ -279,25 +275,22 @@ class TestBrowserToolModes:
         from hawker_agent.tools import browser_tools as browser_tools_module
 
         original_dom_state = browser_tools_module.actions.dom_state
-        original_network_log = browser_tools_module.actions.get_network_log
         original_get_cookies = browser_tools_module.actions.get_cookies
         browser_tools_module.actions.dom_state = fake_dom_state
-        browser_tools_module.actions.get_network_log = fake_network_log
         browser_tools_module.actions.get_cookies = fake_get_cookies
 
         from hawker_agent.browser import dom_utils as dom_utils_module
         original_get_selector = dom_utils_module.get_selector_from_index
         dom_utils_module.get_selector_from_index = fake_get_selector
         try:
-            result = await inspect_page(dom=True, network=True, cookies=True, selector_index=12)
+            result = await inspect_page(dom=True, cookies=True, selector_index=12)
         finally:
             browser_tools_module.actions.dom_state = original_dom_state
-            browser_tools_module.actions.get_network_log = original_network_log
             browser_tools_module.actions.get_cookies = original_get_cookies
             dom_utils_module.get_selector_from_index = original_get_selector
 
         assert result["dom"]["summary"].endswith("DOM=summary")
-        assert result["network"] == [{"url": "https://example.com/api"}]
+        assert "network" not in result
         assert result["cookies"] == [{"name": "sid", "value": "abc"}]
         assert result["selector"]["selector"] == ".item"
         assert "js_snippet" in result["selector"]

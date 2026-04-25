@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from hawker_agent.tools.registry import ToolRegistry
@@ -70,8 +71,62 @@ def normalize_items(items: object) -> list[dict]:
             value.pop("requested_filename", None)
             value.pop("method", None)
         return value
+    return clean_items([_normalize_entity_identity(_trim(item)) for item in items])
 
-    return clean_items([_trim(item) for item in items])
+_EXPLICIT_KEY_FIELDS = ("entity_key", "ref", "id", "key", "uid")
+
+
+def _normalize_entity_identity(item: object) -> object:
+    if not isinstance(item, dict):
+        return item
+    row = dict(item)
+    _normalize_download_shape(row)
+
+    entity_key = _pick_existing_entity_key(row)
+    if entity_key:
+        row["entity_key"] = entity_key
+
+    return row
+
+
+def _normalize_download_shape(item: dict[str, Any]) -> None:
+    """Fold legacy download fields into the nested `download` structure."""
+    download = item.get("download")
+    if not isinstance(download, dict):
+        download = {}
+        item["download"] = download
+
+    downloaded_file = item.pop("downloaded_file", None)
+    if isinstance(downloaded_file, str) and downloaded_file.strip() and not download.get("file"):
+        download["file"] = downloaded_file.strip()
+
+    download_status = item.pop("download_status", None)
+    if isinstance(download_status, str) and download_status.strip():
+        if download_status.strip() in {"success", "missing_on_disk", "unknown"}:
+            download.setdefault("status", download_status.strip())
+
+    size = item.pop("size", None)
+    if isinstance(size, int) and size > 0 and not download.get("size"):
+        download["size"] = size
+
+    if not download:
+        item.pop("download", None)
+
+
+def _pick_existing_entity_key(item: dict[str, Any]) -> str | None:
+    for key in _EXPLICIT_KEY_FIELDS:
+        value = item.get(key)
+        if _is_informative_identity(value):
+            return f"{key}:{str(value).strip()}" if key != "entity_key" else str(value).strip()
+    return None
+
+
+def _is_informative_identity(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return True
 
 
 def summarize_json(data: object) -> str:
@@ -88,6 +143,90 @@ def summarize_json(data: object) -> str:
     if isinstance(data, dict):
         return f"[http_json] dict | {get_type_signature(data)}"
     return f"[http_json] {type(data).__name__}"
+
+
+def analyze_json_structure(
+    data: object,
+    *,
+    max_depth: int = 4,
+    max_list_items: int = 3,
+    max_keys: int = 40,
+    max_paths: int = 200,
+    sample_chars: int = 120,
+) -> dict[str, Any]:
+    """分析任意 JSON-like 对象的结构，供模型决定字段路径。
+
+    只返回结构、路径、key 和少量标量样本，不返回完整正文；适合先看大 JSON
+    的真实 shape，再决定用哪个路径提取数据。
+    """
+    paths: list[dict[str, Any]] = []
+
+    def sample_scalar(value: object) -> object:
+        if isinstance(value, str):
+            return value[:sample_chars] + ("..." if len(value) > sample_chars else "")
+        if isinstance(value, int | float | bool) or value is None:
+            return value
+        return type(value).__name__
+
+    def add_path(entry: dict[str, Any]) -> None:
+        if len(paths) < max_paths:
+            paths.append(entry)
+
+    def walk(value: object, path: str, depth: int) -> None:
+        if depth > max_depth or len(paths) >= max_paths:
+            return
+        if isinstance(value, dict):
+            keys = list(value.keys())
+            add_path(
+                {
+                    "path": path,
+                    "type": "dict",
+                    "keys": keys[:max_keys],
+                    "key_count": len(keys),
+                    "truncated_keys": len(keys) > max_keys,
+                }
+            )
+            for key in keys[:max_keys]:
+                walk(value[key], f"{path}.{key}" if path != "$" else f"$.{key}", depth + 1)
+            return
+        if isinstance(value, list):
+            item_types = sorted({type(item).__name__ for item in value[:max_list_items]})
+            item_keys: set[str] = set()
+            for item in value[:max_list_items]:
+                if isinstance(item, dict):
+                    item_keys.update(item.keys())
+            add_path(
+                {
+                    "path": path,
+                    "type": "list",
+                    "length": len(value),
+                    "sample_item_types": item_types,
+                    "sample_item_keys": sorted(item_keys)[:max_keys],
+                    "truncated_item_keys": len(item_keys) > max_keys,
+                }
+            )
+            for item in value[:max_list_items]:
+                walk(item, f"{path}[]", depth + 1)
+            return
+        add_path({"path": path, "type": type(value).__name__, "sample": sample_scalar(value)})
+
+    walk(data, "$", 0)
+    if isinstance(data, dict):
+        root_type = "dict"
+        root_keys = list(data.keys())[:max_keys]
+    elif isinstance(data, list):
+        root_type = "list"
+        root_keys = []
+    else:
+        root_type = type(data).__name__
+        root_keys = []
+    return {
+        "root_type": root_type,
+        "root_keys": root_keys,
+        "path_count": len(paths),
+        "truncated_paths": len(paths) >= max_paths,
+        "paths": paths,
+    }
 
 
 def _safe_join(run_dir: str, filename: str) -> str:
@@ -118,7 +257,61 @@ def save_file(data: str, filename: str, run_dir: str) -> str:
         return f"[OK] 已保存文本到 {filepath}"
 
 
+def check_files_on_disk(run_dir: str | os.PathLike, items: list[dict]) -> dict[str, Any]:
+    """核对 items 中声明的下载文件在磁盘或 OBS 上的真实状态。"""
+    base = Path(run_dir)
+    total = 0
+    verified = 0
+    obs_verified = 0
+    missing = []
+    zero_byte = []
+    
+    for item in items:
+        for file_ref in _iter_item_file_refs(item):
+            if file_ref.get("obs_key"):
+                total += 1
+                obs_verified += 1
+                continue
+
+            fpath = file_ref.get("file") or file_ref.get("filename") or file_ref.get("path")
+            if not fpath or not isinstance(fpath, str):
+                continue
+            total += 1
+            p = Path(fpath)
+            if not p.is_absolute():
+                p = base / fpath
+            if not p.exists() or not p.is_file():
+                missing.append(fpath)
+            elif p.stat().st_size == 0:
+                zero_byte.append(fpath)
+            else:
+                verified += 1
+            
+    return {
+        "total_downloads": total,
+        "verified_count": verified,
+        "obs_verified_count": obs_verified,
+        "missing_files": missing,
+        "empty_files": zero_byte,
+        "summary": f"Total: {total}, Verified: {verified}, OBS: {obs_verified}, Missing: {len(missing)}, Empty: {len(zero_byte)}"
+    }
+
+
+def _iter_item_file_refs(item: dict[str, Any]) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    download = item.get("download")
+    if isinstance(download, dict):
+        refs.append(download)
+    artifacts = item.get("artifacts")
+    if isinstance(artifacts, dict):
+        file_artifact = artifacts.get("file")
+        if isinstance(file_artifact, dict):
+            refs.append(file_artifact)
+    return refs
+
+
 def register_data_tools(registry: ToolRegistry) -> None:
     """将数据处理辅助工具注册到工具注册表。只注册大模型需要手动调用的工具。"""
     registry.register(ensure, category="同步工具", expose_in_prompt=False)
     registry.register(parse_http_response, category="同步工具", expose_in_prompt=False)
+    registry.register(analyze_json_structure, category="同步工具")

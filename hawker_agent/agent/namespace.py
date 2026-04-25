@@ -21,6 +21,7 @@ from typing import Any, TYPE_CHECKING
 from hawker_agent.observability import emit_observation
 from hawker_agent.agent.artifact import artifact_to_answer_text, normalize_final_artifact
 from hawker_agent.tools.data_tools import (
+    analyze_json_structure,
     clean_items,
     ensure,
     normalize_items,
@@ -246,16 +247,21 @@ def register_core_actions(
         run_dir (str): 当前运行的目录。
     """
     # 提示：核心动作必须带文档字符串，以便 build_capabilities_list 提取
-    
+
     fn_append = _make_append_items(state, run_dir)
     fn_append.__doc__ = "保存数据。追加到 all_items（自动去重），这是保存数据的唯一方式。"
     registry.register(fn_append, name="append_items", category="数据保存")
-    
+
     fn_checkpoint = _make_save_checkpoint(state, run_dir)
     fn_checkpoint.__doc__ = "将当前 all_items 进度保存到磁盘（防止任务意外中断丢失数据）。不要使用 result.json 作为文件名；该文件名保留给最终结果。"
     registry.register(fn_checkpoint, name="save_checkpoint", category="数据保存")
 
-    fn_observe = _make_observe()
+    fn_verify = _make_verify_downloads(state, run_dir)
+    fn_verify.__doc__ = "核对磁盘上的文件下载状态。在确认交付前调用，确保所有 download.file 都真实存在且不为空。"
+    registry.register(fn_verify, name="verify_downloads", category="数据保存")
+
+    fn_observe = _make_observe(state)
+
     fn_observe.__doc__ = "向大模型写入本步 Observation。只用它反馈数量、样本、状态；不要用 print 作为正式观察通道。"
     registry.register(fn_observe, name="observe", category="其他工具")
 
@@ -283,34 +289,52 @@ def build_namespace(
 
     # 注入外部工具（包括通过 register_core_actions 注入的核心动作）
     for name, fn in tools_dict.items():
-        if name == "browser_download":
-            # 为这些涉及文件写入的工具自动注入 run_dir 参数
-            # 注意：必须使用默认参数绑定 fn_to_call，否则闭包会捕获循环变量的最终值
+        if name in {"browser_download", "obs_stream_download"}:
+            # 为涉及下载的工具自动注入运行上下文并记录证据
             should_inject_run_dir = _supports_kwarg(fn, "run_dir")
+            supports_ref = _supports_kwarg(fn, "ref")
+            supports_entity_key = _supports_kwarg(fn, "entity_key")
             if inspect.iscoroutinefunction(inspect.unwrap(fn)):
                 @functools.wraps(fn)
-                async def wrapped_with_rundir(
+                async def wrapped_download_tool(
                     *args: object,
                     fn_to_call=fn,
+                    name_of_tool=name,
                     inject_run_dir=should_inject_run_dir,
+                    inject_ref=supports_ref,
+                    inject_entity_key=supports_entity_key,
                     **kwargs: object,
                 ) -> object:
                     if inject_run_dir and "run_dir" not in kwargs:
                         kwargs["run_dir"] = run_dir
-                    return await fn_to_call(*args, **kwargs)
-                sys_dict[name] = _bind_callable_to_state(state, wrapped_with_rundir)
+                    call_kwargs = dict(kwargs)
+                    if not inject_ref:
+                        call_kwargs.pop("ref", None)
+                    if not inject_entity_key:
+                        call_kwargs.pop("entity_key", None)
+                    result = await fn_to_call(*args, **call_kwargs)
+                    if isinstance(result, dict) and result.get("ok"):
+                        # 转换结果为证据项
+                        if name_of_tool == "browser_download":
+                            evidence = _build_download_evidence_item(result, run_dir)
+                        else:
+                            evidence = result
+                        explicit_entity_key = kwargs.get("entity_key") or result.get("entity_key")
+                        explicit_ref = kwargs.get("ref") or result.get("ref")
+                        if isinstance(evidence, dict):
+                            if isinstance(explicit_entity_key, str) and explicit_entity_key.strip():
+                                evidence["entity_key"] = explicit_entity_key.strip()
+                            elif isinstance(explicit_ref, str) and explicit_ref.strip():
+                                evidence["ref"] = explicit_ref.strip()
+                        if evidence:
+                            changed, _ = state.items.append(normalize_items([evidence]))
+                            if changed:
+                                state.mark_activity()
+                    return result
+                sys_dict[name] = _bind_callable_to_state(state, wrapped_download_tool)
             else:
-                @functools.wraps(fn)
-                def wrapped_with_rundir_sync(
-                    *args: object,
-                    fn_to_call=fn,
-                    inject_run_dir=should_inject_run_dir,
-                    **kwargs: object,
-                ) -> object:
-                    if inject_run_dir and "run_dir" not in kwargs:
-                        kwargs["run_dir"] = run_dir
-                    return fn_to_call(*args, **kwargs)
-                sys_dict[name] = _bind_callable_to_state(state, wrapped_with_rundir_sync)
+                # 同步下载工具（如果有）
+                sys_dict[name] = _bind_callable_to_state(state, fn)
         else:
             sys_dict[name] = _bind_callable_to_state(state, fn)
 
@@ -320,6 +344,7 @@ def build_namespace(
     sys_dict["ensure"] = ensure
     sys_dict["sys_parse_http_response"] = parse_http_response
     sys_dict["sys_summarize_json"] = summarize_json
+    sys_dict["sys_analyze_json_structure"] = analyze_json_structure
     sys_dict["sys_normalize_items"] = normalize_items
     sys_dict["sys_save_file"] = save_file
     
@@ -354,23 +379,48 @@ def build_system_dict(
     register_core_actions(registry, state, run_dir)
     return build_namespace(state, registry.as_namespace_dict(), run_dir)
 
+def _record_observation(state: CodeAgentState, message: str) -> None:
+    """Emit and retain a recent observation for later evaluation."""
+    emit_observation(message)
+    state.remember_observation(message)
 
-def _reconcile_item_downloads(run_dir: str, items: list[dict]) -> list[dict]:
-    """写入前核对 downloaded_file 是否真实存在。"""
-    base = Path(run_dir)
-    normalized: list[dict] = []
+
+def _project_public_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Hide internal identity metadata from model-facing append_items output."""
+    projected: list[dict[str, Any]] = []
     for item in items:
         row = dict(item)
-        downloaded_file = row.get("downloaded_file")
-        if isinstance(downloaded_file, str) and downloaded_file.strip():
-            candidate = base / downloaded_file
-            if not candidate.exists() or not candidate.is_file():
-                row.pop("downloaded_file", None)
-                row["download_status"] = "missing_on_disk"
-        normalized.append(row)
-    return normalized
+        row.pop("entity_key", None)
+        projected.append(row)
+    return projected
 
+def _build_download_evidence_item(result: dict[str, object], run_dir: str) -> dict[str, object] | None:
+    """将 browser_download 的成功结果转换为带 download 嵌套键的证据项。
 
+    技术元数据封装在 download 键内；实体身份应由上游显式通过 ref/entity_key 透传。
+    """
+    url = str(result.get("url") or "").strip()
+    path_text = str(result.get("path") or "").strip()
+    filename = str(result.get("filename") or "").strip()
+    if not url or not path_text:
+        return None
+
+    path = Path(path_text)
+    base = Path(run_dir)
+    try:
+        downloaded_file = str(path.relative_to(base))
+    except ValueError:
+        downloaded_file = path.name or filename
+
+    return {
+        "download_url": url,
+        "download": {
+            "status": "success",
+            "file": downloaded_file,
+            "path": str(path),
+            "size": int(result.get("size") or 0),
+        }
+    }
 def _make_append_items(state: CodeAgentState, run_dir: str) -> Callable:
     """创建 append_items 工具函数。
 
@@ -381,28 +431,32 @@ def _make_append_items(state: CodeAgentState, run_dir: str) -> Callable:
         Callable: append_items 函数。
     """
     async def append_items(items: object) -> list[dict]:
-        normalized = _reconcile_item_downloads(run_dir, normalize_items(items))
-        added, skipped = state.items.append(normalized)
-        if added:
+        normalized = normalize_items(items)
+        changed, unchanged = state.items.append(normalized)
+        if changed:
             state.mark_activity()
-        sample = json.dumps(state.items.get_raw_list()[-1], ensure_ascii=False)[:120] if added else ""
-        emit_observation(
-            f"[append_items] +{added} -> total={len(state.items)}"
-            + (f" | skipped={skipped}" if skipped else "")
+        last_changed = state.items.get_last_changed()
+        if isinstance(last_changed, dict):
+            last_changed = _project_public_items([last_changed])[0]
+        sample = json.dumps(last_changed, ensure_ascii=False)[:120] if last_changed else ""
+        _record_observation(
+            state,
+            f"[append_items] changed={changed} -> total={len(state.items)}"
+            + (f" | unchanged={unchanged}" if unchanged else "")
             + (f" | 样本: {sample}" if sample else "")
         )
-        return state.items.get_raw_list()
+        return _project_public_items(state.items.get_raw_list())
     return append_items
 
 
-def _make_observe() -> Callable:
+def _make_observe(state: CodeAgentState) -> Callable:
     """创建 observe 工具函数。
 
     Returns:
         Callable: observe 函数。
     """
     def observe(message: object) -> None:
-        emit_observation(str(message))
+        _record_observation(state, str(message))
     return observe
 
 
@@ -420,12 +474,12 @@ def _make_save_checkpoint(state: CodeAgentState, run_dir: str) -> Callable:
         target = filename or "checkpoint.json"
         if Path(target).name == "result.json":
             target = "checkpoint.json"
-            emit_observation("[save_checkpoint] 文件名 result.json 保留给最终结果，已自动改存为 checkpoint.json")
+            _record_observation(state, "[save_checkpoint] 文件名 result.json 保留给最终结果，已自动改存为 checkpoint.json")
         state.checkpoint_files.add(target)
         result = save_file(
             json.dumps(state.items.get_raw_list(), ensure_ascii=False), target, run_dir
         )
-        emit_observation(f"[save_checkpoint] total={len(state.items)} | file={target}")
+        _record_observation(state, f"[save_checkpoint] total={len(state.items)} | file={target}")
         return result
     return save_checkpoint
 
@@ -449,3 +503,14 @@ def _make_final_answer(state: CodeAgentState) -> Callable:
         state.final_answer_requested = answer_text
         emit_observation(f"[final_answer] {answer_text}")
     return final_answer
+
+
+def _make_verify_downloads(state: CodeAgentState, run_dir: str) -> Callable:
+    """创建 verify_downloads 工具函数。"""
+    async def verify_downloads() -> dict[str, Any]:
+        from hawker_agent.tools.data_tools import check_files_on_disk
+        items = state.items.to_list()
+        result = check_files_on_disk(run_dir, items)
+        _record_observation(state, f"[verify_downloads] {result['summary']}")
+        return result
+    return verify_downloads

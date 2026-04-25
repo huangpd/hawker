@@ -126,6 +126,7 @@ class CodeAgentState:
     healing_records: list[dict[str, Any]] = field(default_factory=list)
     evaluator_records: list[dict[str, Any]] = field(default_factory=list)
     download_registry: dict[str, dict[str, Any]] = field(default_factory=dict)
+    recent_observations: list[str] = field(default_factory=list)
 
     # Token 预算
     token_stats: TokenStats = field(default_factory=TokenStats)
@@ -245,6 +246,15 @@ class CodeAgentState:
     def list_downloaded_files(self) -> list[dict[str, Any]]:
         """返回当前运行已下载文件的快照列表。"""
         return [dict(record) for record in self.download_registry.values()]
+
+    def remember_observation(self, message: str, max_entries: int = 8) -> None:
+        """Record a recent observation for evaluator-facing evidence."""
+        text = str(message).strip()
+        if not text:
+            return
+        self.recent_observations.append(text)
+        if len(self.recent_observations) > max_entries:
+            del self.recent_observations[:-max_entries]
 
     def bind_log_context(self, step: int | str | None = None) -> AbstractContextManager[LogContext]:
         """将当前状态的追踪 ID 和运行 ID 绑定到日志上下文中。

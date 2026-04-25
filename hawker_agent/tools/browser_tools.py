@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 from hawker_agent.browser import actions
@@ -15,6 +16,12 @@ if TYPE_CHECKING:
     from hawker_agent.browser.session import BrowserSession
     from hawker_agent.models.history import CodeAgentHistoryList
     from hawker_agent.models.state import CodeAgentState
+
+
+_JS_FUNCTION_HEAD_RE = re.compile(
+    r"^\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)"
+)
+_JS_ALREADY_INVOKED_RE = re.compile(r"\)\s*\(\s*\)\s*$")
 
 
 def register_browser_tools(
@@ -158,7 +165,7 @@ def register_browser_tools(
         return summary.startswith("[失败]")
 
     async def nav(url: str, mode: str = "auto") -> str:
-        """导航到目标 URL 并返回结果摘要。`mode` 可选：`auto` 让系统按当前状态选择最省 token 的模式；`skip` 只导航并做轻量页面确认，不读取 DOM；`summary` 返回轻量页面摘要；`diff` 返回相对上一次页面快照的变化摘要；`full` 返回完整 DOM。命中高置信 SOP 且下一步直接提取时，优先用 `mode="skip"`。"""
+        """导航到目标 URL 并返回结果摘要。`mode` 可选：`auto` 让系统自动选择模式；`skip` 只导航并做轻量页面确认，不读取 DOM；`summary` 返回轻量页面摘要；`diff` 返回相对上一次页面快照的变化摘要；`full` 返回完整 DOM。"""
         effective_mode = _resolve_mode("nav", mode)
         result = await actions.nav(
             session,
@@ -194,50 +201,36 @@ def register_browser_tools(
         include: list[str] | str | None = None,
         selector_index: int | None = None,
         mode: str = "summary",
-        only_new_network: bool = True,
         cookie_domain: str = "",
-        network_method: str | list[str] | None = None,
-        network_status_range: tuple[int, int] | list[int] | int | str | None = None,
-        network_content_type_contains: str = "",
-        network_only_with_body: bool = False,
-        network_max_entries: int = 20,
-        network_structured: bool = False,
         cookie_verbose: bool = True,
         *,
         dom: bool | None = None,
-        network: bool | None = None,
         cookies: bool | None = None,
     ) -> dict[str, Any]:
-        """统一页面侦察入口；优先用它一次拿到 DOM 摘要、抓包、Cookie 和选择器，而不是分散多次探测。
+        """统一页面侦察入口；一次拿到 DOM 摘要、Cookie 和选择器，而不是分散多次探测。常用参数只需 `include`、`selector_index`、`mode`。
 
         用法示例::
 
             await inspect_page(include=["dom"])
-            await inspect_page(include=["network"], network_method="POST", network_status_range=(200,299))
             await inspect_page(include=["cookies"], cookie_domain="example.com")
 
         Args:
             include (list[str] | str | None, optional): 要采集的维度，可传
-                ``"dom" | "network" | "cookies"`` 中的任意组合。默认 ``["dom"]``。
-                也支持字符串 ``"dom,network"``。
+                ``"dom" | "cookies"`` 中的任意组合。默认 ``["dom"]``。
+                也支持字符串 ``"dom,cookies"``。
             selector_index (int | None, optional): 若设置，将额外为该索引返回
                 ``selector + shadow_path + js_snippet``。
             mode (str, optional): DOM 模式，默认 ``"summary"``，可选
                 ``"summary" | "diff" | "full" | "auto"``。
-            only_new_network (bool, optional): 仅拉取自上次读取以来的新请求。默认 True。
             cookie_domain (str, optional): Cookie 过滤域（同源/子域匹配）。
-            network_method / network_status_range / network_content_type_contains /
-            network_only_with_body / network_max_entries: 透传给 ``get_network_log``。
 
-        向后兼容：仍接受旧的布尔参数 ``dom=/network=/cookies=``，当同时传入
+        向后兼容：仍接受旧的布尔参数 ``dom=/cookies=``，当同时传入
         ``include=`` 时优先使用 ``include``。
         """
         # 旧布尔参数的兼容路径
         legacy_keys: list[str] = []
         if dom:
             legacy_keys.append("dom")
-        if network:
-            legacy_keys.append("network")
         if cookies:
             legacy_keys.append("cookies")
 
@@ -248,12 +241,22 @@ def register_browser_tools(
         else:
             keys = [str(k).lower() for k in include if str(k).strip()]
 
-        unknown = [k for k in keys if k not in {"dom", "network", "cookies"}]
+        unsupported = [k for k in keys if k == "network"]
+        if unsupported:
+            return {
+                "error": (
+                    "inspect_page(include=['network']) 已移除。"
+                    "请用 inspect_page(include=['dom']) / js(...) 读取页面状态，"
+                    "找到明确 URL 后再用 fetch(...) 显式请求。"
+                )
+            }
+
+        unknown = [k for k in keys if k not in {"dom", "cookies"}]
         if unknown:
             return {
                 "error": (
                     f"inspect_page(include=...) 不支持 {unknown}，"
-                    "合法值：'dom' / 'network' / 'cookies'。"
+                    "合法值：'dom' / 'cookies'。"
                 )
             }
 
@@ -271,24 +274,6 @@ def register_browser_tools(
                 "mode": dom_result.context_mode,
                 "snapshot": dom_result.snapshot or {},
             }
-
-        if "network" in keys:
-            network_result = await actions.get_network_log(
-                session,
-                "",
-                only_new_network,
-                method=network_method,
-                status_range=network_status_range,
-                content_type_contains=network_content_type_contains,
-                only_with_body=network_only_with_body,
-                max_entries=network_max_entries,
-            )
-            if network_structured:
-                payload["network"] = network_result
-            elif isinstance(network_result, dict):
-                payload["network"] = network_result.get("entries", [])
-            else:
-                payload["network"] = network_result
 
         if "cookies" in keys:
             payload["cookies"] = await actions.get_cookies(
@@ -323,6 +308,9 @@ def register_browser_tools(
         """
         call_args = list(args) if args is not None else list(fn_args)
         if not call_args:
+            stripped = code.strip()
+            if _JS_FUNCTION_HEAD_RE.match(stripped) and not _JS_ALREADY_INVOKED_RE.search(stripped):
+                return await actions.js(session, f"({stripped})()")
             return await actions.js(session, code)
 
         wrapped_code = (
@@ -384,11 +372,26 @@ def register_browser_tools(
         """通过 DOM 索引 [i_*] 向输入框填写文本"""
         return await actions.fill_input(session, index, text)
 
-    async def browser_download(url: str, filename: str | None = None, **kwargs: object) -> dict[str, Any]:
-        """利用浏览器会话下载文件。
+    async def browser_download(
+        url: str,
+        filename: str | None = None,
+        *,
+        ref: str | None = None,
+        entity_key: str | None = None,
+        **kwargs: object,
+    ) -> dict[str, Any]:
+        """利用浏览器会话下载文件。若该下载属于已有业务对象，必须显式传相同的 ``ref=`` 或 ``entity_key=``，让系统把下载证据并回同一实体：
 
-        If a matching URL has already been downloaded in this run, reuse the
-        recorded path instead of downloading again.
+        返回字段包括：
+        - ``path``: 本地绝对路径
+        - ``size``: 文件大小（字节）
+        - ``download_url``: 原始下载链接
+
+        系统不会再根据字段名或 URL 猜测合并。先发现对象并追加 ``ref``，再下载
+
+        ``paper = {"ref": "paper_1", ...}``
+        ``await append_items([paper])``
+        ``await browser_download(pdf_url, filename="paper.pdf", ref="paper_1")``
         """
         if state is not None:
             cached = state.get_download_record(url)
@@ -403,6 +406,10 @@ def register_browser_tools(
                     "method": cached.get("method", "registry"),
                     "reused": True,
                 }
+                if ref:
+                    reused["ref"] = ref
+                if entity_key:
+                    reused["entity_key"] = entity_key
                 logger.info(
                     "浏览器下载命中注册表复用: url=%s file=%s",
                     url,
@@ -411,6 +418,10 @@ def register_browser_tools(
                 return reused
 
         result = await actions.browser_download(session, url, filename=filename, **kwargs)
+        if ref:
+            result["ref"] = ref
+        if entity_key:
+            result["entity_key"] = entity_key
         if state is not None and result.get("ok"):
             state.register_download(
                 url=str(result.get("url") or url),
@@ -425,34 +436,6 @@ def register_browser_tools(
     async def list_downloaded_files() -> list[dict[str, Any]]:
         """返回当前运行已下载文件的注册表快照。"""
         return state.list_downloaded_files() if state is not None else []
-
-    async def get_network_log(
-        filter: str = "",
-        only_new: bool = False,
-        method: str | list[str] | None = None,
-        status_range: tuple[int, int] | list[int] | int | str | None = None,
-        content_type_contains: str = "",
-        only_with_body: bool = False,
-        max_entries: int = 20,
-        structured: bool = False,
-    ) -> list[dict[str, Any]] | dict[str, Any]:
-        """读取页面拦截到的 Fetch/XHR 网络请求日志，支持多维过滤。
-
-        默认返回兼容旧接口的 ``list[dict]``。如需 richer 结果，请显式传
-        ``structured=True``，此时返回形如
-        ``{"entries": [...], "summary": {...}, "_truncated": bool, "filters": {...}}``。
-        """
-        result = await actions.get_network_log(
-            session,
-            filter,
-            only_new,
-            method=method,
-            status_range=status_range,
-            content_type_contains=content_type_contains,
-            only_with_body=only_with_body,
-            max_entries=max_entries,
-        )
-        return result if structured else result.get("entries", [])
 
     async def get_cookies(domain: str = "", verbose: bool = True) -> list[dict[str, Any]]:
         """
@@ -508,7 +491,6 @@ def register_browser_tools(
         (fill_input, "交互", True),
         (browser_download, "网络 & 数据", True),
         (list_downloaded_files, "网络 & 数据", False),
-        (get_network_log, "网络 & 数据", False),
         (get_selector_from_index, "交互", False),
         (get_cookies, "网络 & 数据", False),
     ]

@@ -8,7 +8,7 @@ import io
 import logging
 import re
 import traceback
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, MutableMapping
 
 from hawker_agent.agent.compressor import truncate_output
 from hawker_agent.agent.healer import try_heal_code
@@ -30,12 +30,45 @@ _BLOCKED_IMPORTS = frozenset({
 })
 
 
+class _LegacyNamespaceAdapter:
+    """Compatibility adapter for older tests/callers that pass a plain dict."""
+
+    def __init__(self, backing: MutableMapping[str, object]) -> None:
+        self.system: dict[str, object] = {}
+        self.session = backing
+        self.cell_local: dict[str, object] = {}
+
+    @property
+    def exec_view(self) -> dict[str, object]:
+        return {**self.session, **self.cell_local}
+
+    def commit(self) -> None:
+        self.session.update(self.cell_local)
+        self.cell_local.clear()
+
+    def rollback(self) -> None:
+        self.cell_local.clear()
+
+    def restore(self, snapshot: dict[str, object]) -> None:
+        self.session.clear()
+        self.session.update(snapshot)
+        self.cell_local.clear()
+
+
+def _coerce_namespace(namespace: Any) -> Any:
+    if isinstance(namespace, MutableMapping):
+        return _LegacyNamespaceAdapter(namespace)
+    return namespace
+
+
 def _snapshot_session(namespace: HawkerNamespace) -> tuple[dict[str, object] | None, str | None]:
     """为 session 创建可靠快照；失败时返回可读错误而不是退化为浅拷贝。
 
     事务回滚必须建立在深拷贝快照之上。若 session 中混入不可深拷贝对象，
     则本步应 fail closed，避免执行后无法可靠回滚。
     """
+    if isinstance(namespace, _LegacyNamespaceAdapter):
+        return dict(namespace.session), None
     try:
         return copy.deepcopy(namespace.session), None
     except Exception as exc:
@@ -148,6 +181,7 @@ async def execute(
     Returns:
         str: 执行的输出（观察结果或错误消息）。
     """
+    namespace = _coerce_namespace(namespace)
     log_context = state.bind_log_context(step) if state else contextlib.nullcontext()
     with log_context:
         with trace(f"execute_code_{step or 'anon'}") as span:
@@ -223,7 +257,10 @@ async def execute(
 
             except Exception:
                 # 5. 回滚事务：彻底恢复 session 并清空 local
-                namespace.session = session_snapshot
+                if isinstance(namespace, _LegacyNamespaceAdapter):
+                    namespace.restore(session_snapshot)
+                else:
+                    namespace.session = session_snapshot
                 namespace.rollback()
 
                 legacy_stdout = buf.getvalue().strip()

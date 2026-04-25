@@ -1,39 +1,31 @@
 # Example API Site — Scraping & Data Extraction
 
-`https://api.example.org` — all public data, no auth required. **Never use the browser for this site.** One HTTP request returns structured JSON directly.
+`https://api.example.org` — public JSON API, no auth. **Never use the browser for list/detail data.**
 
 ## Do this first
 
-Use the JSON endpoint first and inspect the response shape before writing any parsing logic.
+Call the JSON endpoint and inspect the response shape before parsing fields.
 
 ## Common workflows
 
-### Search records (API)
+### Search records
 
 ```python
-data = await http_json("https://api.example.org/search?q=transformer&limit=5")
+data = await fetch("https://api.example.org/search?q=transformer&limit=5", parse="json")
 items = data.get("results", [])
 print(len(items), items[0]["title"] if items else None)
 # Confirmed output (2026-04-20): 5 Transformer Foundations
 ```
 
-### Fetch single record (API)
+### Fetch detail
 
 ```python
-record = await http_json("https://api.example.org/items/123")
-print(record["id"], record["title"], record.get("updated_at"))
-# Confirmed output (2026-04-20): 123 Transformer Foundations 2026-04-18
+record = await fetch("https://api.example.org/items/123", parse="json")
+print(record["id"], record["title"])
+# Confirmed output (2026-04-20): 123 Transformer Foundations
 ```
-
-## API reference
-
-| Field | Meaning |
-| --- | --- |
-| `q` | search query |
-| `limit` | page size |
-| `/items/{id}` | single record endpoint |
 
 ## Gotchas
 
-- Do not request full DOM when JSON already contains the needed fields.
-- Prefer direct item lookup over page scraping.
+- Do not request DOM when JSON already has the fields.
+- Prefer direct detail endpoints over browser scraping.

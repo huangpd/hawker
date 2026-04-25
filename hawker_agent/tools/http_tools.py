@@ -12,12 +12,19 @@ import httpx
 
 from hawker_agent.config import get_settings
 from hawker_agent.observability import emit_tool_observation
-from hawker_agent.tools.data_tools import clean_items, ensure, parse_http_response, summarize_json
+from hawker_agent.tools.data_tools import (
+    analyze_json_structure,
+    clean_items,
+    ensure,
+    parse_http_response,
+    summarize_json,
+)
 from hawker_agent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
 _clients_by_loop: dict[int, httpx.AsyncClient] = {}
+_search_web_cache: dict[tuple[object, ...], dict[str, Any]] = {}
 
 
 _BLOCKED_HOSTS = {
@@ -35,10 +42,10 @@ HTTP_JSON_MAX_ITEMS = 100
 
 _STATUS_HINTS: dict[int, str] = {
     400: "请求被服务端拒绝(400)。请检查 URL/params/body 是否符合接口协议；常见原因：字段缺失、类型不匹配、签名错误。",
-    401: "未授权(401)。请先通过浏览器登录目标站点，然后用 `get_cookies(domain=...)` 或 `inspect_page(include=['network'])` 从最近的真实请求中复刻 Cookie/Authorization 头，再重试。",
-    403: "访问被拒(403)。可能是缺少 Referer / Origin / 反爬 token，或账号无权限。建议用 `inspect_page(include=['network'])` 查看一条成功请求的全部 headers 后复刻。",
+    401: "未授权(401)。请先通过浏览器登录目标站点；如需登录态，用 `get_cookies(domain=...)` 取得对应域 Cookie，并确认显式请求的 URL/headers/body 正确后重试。",
+    403: "访问被拒(403)。可能是缺少 Referer / Origin / 反爬 token，或账号无权限。请从页面 DOM/脚本/文档确认显式请求参数后重试。",
     404: "资源不存在(404)。确认 URL 路径、路径参数和接口版本号是否正确，或站点是否已改版。",
-    405: "方法不被允许(405)。对照接口文档切换 GET/POST；若无文档，可从网络日志中找到原始方法名。",
+    405: "方法不被允许(405)。对照接口文档或页面脚本切换 GET/POST。",
     408: "请求超时(408)。可增大 timeout 或减小 batch，避免一次抓太多。",
     409: "资源冲突(409)。通常是并发写入或重复提交引起；重试前请先拉取最新状态。",
     410: "资源已下线(410)。别再重试这个 URL，改换其它入口。",
@@ -180,8 +187,8 @@ def _truncate_json_payload(value: Any, *, max_items: int) -> tuple[Any, bool]:
     return value, False
 
 
-def _is_private_ip(host: str) -> bool:
-    """Return True if *host* resolves to a private, loopback, or link-local address."""
+def _is_blocked_ip(host: str) -> bool:
+    """Return True for private, loopback, link-local, or reserved IP literals."""
     try:
         addr = ipaddress.ip_address(host)
         return addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved
@@ -223,15 +230,23 @@ async def _validate_url(url: str) -> None:
         raise ValueError(f"Invalid URL (no hostname): {url}")
     if hostname in _BLOCKED_HOSTS:
         raise ValueError(f"Blocked request to reserved host: {hostname}")
-    if _is_private_ip(hostname):
+    if _is_blocked_ip(hostname):
         raise ValueError(f"Blocked request to private/reserved IP: {hostname}")
     try:
         resolved_ips = await _resolve_host_ips(hostname, parsed.port or _default_port_for_scheme(parsed.scheme))
     except socket.gaierror as exc:
         raise ValueError(f"Failed to resolve hostname: {hostname}") from exc
-    for ip in resolved_ips:
-        if _is_private_ip(ip):
-            raise ValueError(f"Blocked request to private/reserved IP via DNS: {hostname} -> {ip}")
+    blocked_ips = sorted(ip for ip in resolved_ips if _is_blocked_ip(ip))
+    public_ips = sorted(ip for ip in resolved_ips if not _is_blocked_ip(ip))
+    if blocked_ips and not public_ips:
+        raise ValueError(f"Blocked request to private/reserved IP via DNS: {hostname} -> {blocked_ips[0]}")
+    if blocked_ips and public_ips:
+        logger.warning(
+            "URL 校验发现 mixed DNS 结果，按公网地址放行: host=%s public=%s blocked=%s",
+            hostname,
+            public_ips,
+            blocked_ips,
+        )
 
 
 async def _get_client() -> httpx.AsyncClient:
@@ -249,6 +264,7 @@ async def close_http_clients() -> None:
     """关闭当前进程内缓存的所有 httpx 客户端。"""
     clients = list(_clients_by_loop.values())
     _clients_by_loop.clear()
+    _search_web_cache.clear()
     for client in clients:
         if not client.is_closed:
             await client.aclose()
@@ -563,6 +579,11 @@ async def fetch(
     - ``json_pointer="/data/0"``：RFC 6901 JSON Pointer 取值（仅 json 模式）。
     - ``max_items=100``：JSON 列表截断阈值；``0`` 表示不截断。
     - ``preview_chars=20000``：Observation 预览截断阈值。返回值始终为完整正文。
+
+    ``parse`` 模式：
+    - ``json``：解析 JSON 并返回 Python 对象。
+    - ``body``：返回不带 ``[status]`` 前缀的完整响应正文，适合 XML/HTML/Atom 解析。
+    - ``text`` / ``raw``：返回带 ``[status]`` 前缀的原始响应，适合调试 HTTP 状态。
     """
     normalized_parse = (parse or "json").lower()
     if normalized_parse == "json":
@@ -581,6 +602,24 @@ async def fetch(
             preview_chars=preview_chars,
             **kwargs,
         )
+    if normalized_parse in {"body", "text_body"}:
+        if pick or json_pointer:
+            raise ValueError("pick= / json_pointer= 仅在 parse='json' 下可用。")
+        raw = await http_request(
+            url,
+            method=method,
+            headers=headers,
+            params=params,
+            data=data,
+            json=json,
+            content=content,
+            cookies=cookies,
+            preview_chars=preview_chars,
+            **kwargs,
+        )
+        status, body = parse_http_response(raw)
+        ensure(200 <= status < 300, f"HTTP {status}: {body[:200]}")
+        return body
     if normalized_parse in {"text", "raw"}:
         if pick or json_pointer:
             raise ValueError("pick= / json_pointer= 仅在 parse='json' 下可用。")
@@ -596,7 +635,7 @@ async def fetch(
             preview_chars=preview_chars,
             **kwargs,
         )
-    raise ValueError(f"fetch(parse=...) 仅支持 json / text / raw，收到: {parse}")
+    raise ValueError(f"fetch(parse=...) 仅支持 json / body / text / raw，收到: {parse}")
 
 
 async def search_web(
@@ -606,8 +645,16 @@ async def search_web(
     safe: str | None = None,
     lr: str | None = None,
     gl: str | None = None,
-) -> dict[str, Any]:
-    """做通用网页搜索时优先用它拿标题、链接和摘要，只有结果不足时再退回浏览器搜索。"""
+    full: bool = False,
+) -> list[dict[str, Any]] | dict[str, Any]:
+    """做通用网页搜索。
+
+    默认返回上游搜索结果列表的原始 ``dict``，不改写 item 字段。
+    需要分页、来源和上游 JSON 结构诊断信息时传 ``full=True``，此时返回
+    ``{"items": [...], "searchInformation": {...}, "schema": {...}, ...}``，
+    ``items`` 是系统从上游 JSON 中检测到的原始结果列表，具体字段看
+    ``payload["schema"]``。
+    """
     query = (q or "").strip()
     if not query:
         raise ValueError("q 不能为空。")
@@ -635,6 +682,20 @@ async def search_web(
     if gl:
         params["gl"] = gl
 
+    cache_key = (query, limit, page, safe or "", lr or "", gl or "")
+    cached = _search_web_cache.get(cache_key)
+    if cached is not None:
+        items = cached.get("items")
+        item_count = len(items) if isinstance(items, list) else 0
+        emit_tool_observation(
+            "search_web",
+            "CACHE_HIT",
+            f"items={item_count},page={page},limit={limit}",
+            query[:300],
+        )
+        cached_copy = json_lib.loads(json_lib.dumps(cached, ensure_ascii=False))
+        return cached_copy if full else cached_copy.get("items", [])
+
     client = await _get_client()
     response = await client.get(
         "https://api.searlo.tech/api/v1/search/web",
@@ -643,6 +704,8 @@ async def search_web(
     )
     response.raise_for_status()
     payload = response.json()
+    payload = _prepare_search_web_payload(payload, query=query, page=page)
+    _search_web_cache[cache_key] = json_lib.loads(json_lib.dumps(payload, ensure_ascii=False))
     items = payload.get("items")
     item_count = len(items) if isinstance(items, list) else 0
     emit_tool_observation(
@@ -651,7 +714,96 @@ async def search_web(
         f"items={item_count},page={page},limit={limit}",
         query[:300],
     )
-    return payload
+    return payload if full else payload.get("items", [])
+
+
+def _find_json_record_lists(
+    data: object,
+    *,
+    max_depth: int = 4,
+    max_candidates: int = 20,
+) -> list[dict[str, Any]]:
+    """Find list[dict] candidates without assuming provider-specific field names."""
+    candidates: list[dict[str, Any]] = []
+
+    def walk(value: object, path: str, depth: int) -> None:
+        if depth > max_depth or len(candidates) >= max_candidates:
+            return
+        if isinstance(value, list):
+            dict_items = [item for item in value if isinstance(item, dict)]
+            if dict_items:
+                item_keys: set[str] = set()
+                for item in dict_items[:3]:
+                    item_keys.update(item.keys())
+                candidates.append(
+                    {
+                        "path": path,
+                        "length": len(value),
+                        "dict_items": len(dict_items),
+                        "sample_item_keys": sorted(item_keys),
+                    }
+                )
+            for idx, item in enumerate(value[:3]):
+                walk(item, f"{path}[{idx}]", depth + 1)
+            return
+        if isinstance(value, dict):
+            for key, child in value.items():
+                walk(child, f"{path}.{key}" if path != "$" else f"$.{key}", depth + 1)
+
+    walk(data, "$", 0)
+    return candidates
+
+
+def _get_by_json_path(data: object, path: str | None) -> object:
+    if not path or path == "$":
+        return data
+    current = data
+    for part in path.removeprefix("$.").split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
+def _prepare_search_web_payload(payload: object, *, query: str, page: int) -> dict[str, Any]:
+    """Attach schema and expose detected raw result records without field rewriting."""
+    if not isinstance(payload, dict):
+        return {
+            "success": False,
+            "searchInformation": {"query": query, "currentPage": page},
+            "schema": analyze_json_structure(payload),
+            "items": [],
+            "raw": payload,
+        }
+
+    normalized = dict(payload)
+    schema = analyze_json_structure(payload)
+    record_candidates = _find_json_record_lists(payload)
+    selected_record_path = record_candidates[0]["path"] if record_candidates else None
+    raw_items = _get_by_json_path(payload, selected_record_path)
+    items = [item for item in raw_items if isinstance(item, dict)] if isinstance(raw_items, list) else []
+
+    search_info = normalized.get("searchInformation")
+    if not isinstance(search_info, dict):
+        params = normalized.get("searchParameters")
+        search_info = params if isinstance(params, dict) else {}
+    normalized["success"] = bool(normalized.get("success", True))
+    normalized["searchInformation"] = {
+        "totalResults": search_info.get("totalResults") or normalized.get("totalResults"),
+        "searchTime": search_info.get("searchTime") or normalized.get("searchTime"),
+        "query": search_info.get("query") or search_info.get("q") or query,
+        "currentPage": search_info.get("currentPage") or normalized.get("page") or page,
+        "nextPage": search_info.get("nextPage") or normalized.get("nextPage"),
+        "previousPage": search_info.get("previousPage") or normalized.get("previousPage"),
+        "hasNextPage": bool(normalized.get("nextPage")),
+        "source": normalized.get("source"),
+        "credits": normalized.get("credits"),
+    }
+    schema["candidate_record_lists"] = record_candidates
+    schema["selected_record_path"] = selected_record_path
+    normalized["schema"] = schema
+    normalized["items"] = items
+    return normalized
 
 
 def register_http_tools(registry: ToolRegistry) -> None:

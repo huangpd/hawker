@@ -1084,6 +1084,7 @@ dependencies = [
     { name = "playwright" },
     { name = "pydantic-settings" },
     { name = "rich" },
+    { name = "sais-pyobs" },
     { name = "typer" },
 ]
 
@@ -1115,6 +1116,7 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "rich", specifier = ">=13.0" },
     { name = "ruff", marker = "extra == 'dev'" },
+    { name = "sais-pyobs", specifier = ">=0.1.5" },
     { name = "typer", specifier = ">=0.12" },
 ]
 provides-extras = ["dev"]
@@ -1199,6 +1201,15 @@ sdist = { url = "https://files.pythonhosted.org/packages/0f/4c/751061ffa58615a32
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d2/fd/6668e5aec43ab844de6fc74927e155a3b37bf40d7c3790e49fc0406b6578/httpx_sse-0.4.3-py3-none-any.whl", hash = "sha256:0ac1c9fe3c0afad2e0ebb25a934a59f4c7823b60792691f779fad2c5568830fc", size = 8960, upload-time = "2025-10-10T21:48:21.158Z" },
 ]
+
+[[package]]
+name = "huaweicloud-sdk-python-obs"
+version = "3.21.8"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pycryptodome" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fa/22/14bb9eea2ae7708db15c1e050d1409b5dad891b80d2fa1edf3c9ec3a1b2a/huaweicloud-sdk-python-obs-3.21.8.tar.gz", hash = "sha256:31b9ff2e2a5d95f3dc0771446db47f4e00bad72131c14fcf3fb8a33ff29c4d4e", size = 75367, upload-time = "2021-09-11T12:28:55.889Z" }
 
 [[package]]
 name = "huggingface-hub"
@@ -2452,6 +2463,22 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/1b/7d/92392ff7815c21062bea51aa7b87d45576f649f16458d78b7cf94b9ab2e6/pycparser-3.0.tar.gz", hash = "sha256:600f49d217304a5902ac3c37e1281c9fe94e4d0489de643a9504c5cdfdfc6b29", size = 103492, upload-time = "2026-01-21T14:26:51.89Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0c/c3/44f3fbbfa403ea2a7c779186dc20772604442dde72947e7d01069cbe98e3/pycparser-3.0-py3-none-any.whl", hash = "sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992", size = 48172, upload-time = "2026-01-21T14:26:50.693Z" },
+]
+
+[[package]]
+name = "pycryptodome"
+version = "3.10.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/88/7f/740b99ffb8173ba9d20eb890cc05187677df90219649645aca7e44eb8ff4/pycryptodome-3.10.1.tar.gz", hash = "sha256:3e2e3a06580c5f190df843cdb90ea28d61099cf4924334d5297a995de68e4673", size = 3762120, upload-time = "2021-02-09T12:29:18.633Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/49/c7/afb27683063b669a15c6599fe5ac8678020acf9e9ab6739cb8ef969255fe/pycryptodome-3.10.1-cp35-abi3-macosx_10_9_x86_64.whl", hash = "sha256:31c1df17b3dc5f39600a4057d7db53ac372f492c955b9b75dd439f5d8b460129", size = 1454793, upload-time = "2021-02-09T12:28:16.324Z" },
+    { url = "https://files.pythonhosted.org/packages/27/e9/d3926cbac277c0a46b24b248b2d742ff46851d1726c8adb2e0c26758d5d5/pycryptodome-3.10.1-cp35-abi3-manylinux1_i686.whl", hash = "sha256:a3105a0eb63eacf98c2ecb0eb4aa03f77f40fbac2bdde22020bb8a536b226bb8", size = 2034920, upload-time = "2021-02-09T12:28:20.553Z" },
+    { url = "https://files.pythonhosted.org/packages/af/ef/bedde9b7a1f237b743eb307e6c247369c2ae5ca6a79b61c064698cfd78cd/pycryptodome-3.10.1-cp35-abi3-manylinux1_x86_64.whl", hash = "sha256:a92d5c414e8ee1249e850789052608f582416e82422502dc0ac8c577808a9067", size = 1923195, upload-time = "2021-02-09T12:28:24.509Z" },
+    { url = "https://files.pythonhosted.org/packages/fa/46/fc3cdba27fd2989ce08a874a327c4587922faf258cc4bf3b07a20bfdd6fa/pycryptodome-3.10.1-cp35-abi3-manylinux2010_i686.whl", hash = "sha256:60386d1d4cfaad299803b45a5bc2089696eaf6cdd56f9fc17479a6f89595cfc8", size = 2034922, upload-time = "2021-02-09T12:28:29.497Z" },
+    { url = "https://files.pythonhosted.org/packages/ad/16/9627ab0493894a11c68e46000dbcc82f578c8ff06bc2980dcd016aea9bd3/pycryptodome-3.10.1-cp35-abi3-manylinux2010_x86_64.whl", hash = "sha256:501ab36aae360e31d0ec370cf5ce8ace6cb4112060d099b993bc02b36ac83fb6", size = 1923200, upload-time = "2021-02-09T12:28:33.281Z" },
+    { url = "https://files.pythonhosted.org/packages/e1/e5/f30cf194e17a7b07f58e1944595497e6167e3aae90b545ccca0ce8dad09e/pycryptodome-3.10.1-cp35-abi3-manylinux2014_aarch64.whl", hash = "sha256:fc7489a50323a0df02378bc2fff86eb69d94cc5639914346c736be981c6a02e7", size = 1477864, upload-time = "2021-02-09T12:28:37.01Z" },
+    { url = "https://files.pythonhosted.org/packages/ff/bc/d212f3665ca89437523741662e9219cbd77eb15e70dbc79ce3fab5800ba6/pycryptodome-3.10.1-cp35-abi3-win32.whl", hash = "sha256:9b6f711b25e01931f1c61ce0115245a23cdc8b80bf8539ac0363bdcf27d649b6", size = 1589960, upload-time = "2021-02-09T12:28:40.79Z" },
+    { url = "https://files.pythonhosted.org/packages/f1/0b/bf5bd5a7643af6265205c06027ada49e853f26b3d3a0fd7e3baf19098876/pycryptodome-3.10.1-cp35-abi3-win_amd64.whl", hash = "sha256:7fd519b89585abf57bf47d90166903ec7b43af4fe23c92273ea09e6336af5c07", size = 1604200, upload-time = "2021-02-09T12:28:44.106Z" },
 ]
 
 [[package]]
@@ -5911,6 +5938,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/05/04/74127fc843314818edfa81b5540e26dd537353b123a4edc563109d8f17dd/s3transfer-0.16.0.tar.gz", hash = "sha256:8e990f13268025792229cd52fa10cb7163744bf56e719e0b9cb925ab79abf920", size = 153827, upload-time = "2025-12-01T02:30:59.114Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fc/51/727abb13f44c1fcf6d145979e1535a35794db0f6e450a0cb46aa24732fe2/s3transfer-0.16.0-py3-none-any.whl", hash = "sha256:18e25d66fed509e3868dc1572b3f427ff947dd2c56f844a5bf09481ad3f3b2fe", size = 86830, upload-time = "2025-12-01T02:30:57.729Z" },
+]
+
+[[package]]
+name = "sais-pyobs"
+version = "0.2.6"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "huaweicloud-sdk-python-obs" },
+    { name = "requests" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/2c/b4/52e0c1f14c1739bc20cd027951c3c65be35492f0615a7a7e7a833d2ea2a4/sais_pyobs-0.2.6.tar.gz", hash = "sha256:43e0d43d7bdf3e10687c192889b875229d4959129ad98e8e38011541c9ff6645", size = 21417, upload-time = "2026-01-29T10:17:28.827Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/61/67/c59d3be31be3d809d5d03bd2bc6a5c0853ac6a31c34f6764d1a552d86c2c/sais_pyobs-0.2.6-py3-none-any.whl", hash = "sha256:09639fc458c5af78747ab5d1711248a48c4206f4f0d7d3fa4fa5cc9528e69a38", size = 13367, upload-time = "2026-01-29T10:17:26.763Z" },
 ]
 
 [[package]]

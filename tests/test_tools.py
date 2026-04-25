@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json as json_mod
 import logging
 import os
@@ -8,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from hawker_agent.agent.namespace import build_namespace, register_core_actions
+from hawker_agent.agent.namespace import build_namespace, build_system_dict, register_core_actions
 from hawker_agent.agent.artifact import normalize_final_artifact, recover_items_from_artifact
 from hawker_agent.agent.prompts import build_system_prompt
 from hawker_agent.models.history import CodeAgentHistoryList
@@ -17,6 +18,7 @@ from hawker_agent.observability import clear_log_context, configure_logging
 from hawker_agent.storage.exporter import save_llm_io_json, save_result_json
 from hawker_agent.tools.browser_tools import register_browser_tools
 from hawker_agent.tools.data_tools import (
+    analyze_json_structure,
     clean_items,
     normalize_items,
     parse_http_response,
@@ -63,6 +65,36 @@ class TestDataTools:
         assert len(cleaned) == 2
         assert cleaned[0]["id"] == 1
         assert cleaned[1]["id"] == 2
+
+    def test_analyze_json_structure_reports_generic_paths(self) -> None:
+        data = {
+            "organic": [
+                {
+                    "position": 1,
+                    "title": "Paper",
+                    "url": "https://example.com/paper",
+                    "metadata": {"source": "search"},
+                }
+            ],
+            "totalResults": 20,
+        }
+
+        structure = analyze_json_structure(data)
+
+        assert structure["root_type"] == "dict"
+        assert structure["root_keys"] == ["organic", "totalResults"]
+        assert {
+            "path": "$.organic",
+            "type": "list",
+            "length": 1,
+            "sample_item_types": ["dict"],
+            "sample_item_keys": ["metadata", "position", "title", "url"],
+            "truncated_item_keys": False,
+        } in structure["paths"]
+        assert any(
+            path["path"] == "$.organic[].metadata" and path["keys"] == ["source"]
+            for path in structure["paths"]
+        )
 
     def test_normalize_items(self) -> None:
         assert len(normalize_items({"a": 1})) == 1
@@ -162,6 +194,7 @@ class TestBuildNamespace:
         assert callable(ns["sys_clean_items"])
         assert callable(ns["ensure"])
         assert callable(ns["sys_summarize_json"])
+        assert callable(ns["sys_analyze_json_structure"])
 
     def test_contains_stdlib(self) -> None:
         state = CodeAgentState()
@@ -270,6 +303,78 @@ class TestBuildNamespace:
         assert '"y"' in result
 
     @pytest.mark.asyncio
+    async def test_browser_js_auto_invokes_zero_arg_function_expression(self) -> None:
+        state = CodeAgentState()
+
+        async def fake_js(_session, code: str):
+            return code
+
+        reg = ToolRegistry()
+        register_core_actions(reg, state, "/tmp/test")
+        history = CodeAgentHistoryList()
+        session = type("Session", (), {})()
+        from hawker_agent.tools import browser_tools as browser_tools_module
+
+        original = browser_tools_module.actions.js
+        browser_tools_module.actions.js = fake_js
+        try:
+            register_browser_tools(reg, session, history, state)
+            ns = build_namespace(state, reg.as_namespace_dict(), "/tmp/test")
+            result = await ns["js"]("() => document.title")
+        finally:
+            browser_tools_module.actions.js = original
+
+        assert result == "(() => document.title)()"
+
+    @pytest.mark.asyncio
+    async def test_browser_js_keeps_plain_expression_unchanged(self) -> None:
+        state = CodeAgentState()
+
+        async def fake_js(_session, code: str):
+            return code
+
+        reg = ToolRegistry()
+        register_core_actions(reg, state, "/tmp/test")
+        history = CodeAgentHistoryList()
+        session = type("Session", (), {})()
+        from hawker_agent.tools import browser_tools as browser_tools_module
+
+        original = browser_tools_module.actions.js
+        browser_tools_module.actions.js = fake_js
+        try:
+            register_browser_tools(reg, session, history, state)
+            ns = build_namespace(state, reg.as_namespace_dict(), "/tmp/test")
+            result = await ns["js"]("document.title")
+        finally:
+            browser_tools_module.actions.js = original
+
+        assert result == "document.title"
+
+    @pytest.mark.asyncio
+    async def test_browser_js_does_not_rewrap_iife(self) -> None:
+        state = CodeAgentState()
+
+        async def fake_js(_session, code: str):
+            return code
+
+        reg = ToolRegistry()
+        register_core_actions(reg, state, "/tmp/test")
+        history = CodeAgentHistoryList()
+        session = type("Session", (), {})()
+        from hawker_agent.tools import browser_tools as browser_tools_module
+
+        original = browser_tools_module.actions.js
+        browser_tools_module.actions.js = fake_js
+        try:
+            register_browser_tools(reg, session, history, state)
+            ns = build_namespace(state, reg.as_namespace_dict(), "/tmp/test")
+            result = await ns["js"]("(() => document.title)()")
+        finally:
+            browser_tools_module.actions.js = original
+
+        assert result == "(() => document.title)()"
+
+    @pytest.mark.asyncio
     @pytest.mark.asyncio
     async def test_save_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -307,16 +412,19 @@ def test_register_data_tools() -> None:
     register_data_tools(reg)
     assert "ensure" in reg
     assert "parse_http_response" in reg
+    assert "analyze_json_structure" in reg
     sync_caps = reg.build_capabilities_list("sync")
     async_caps = reg.build_capabilities_list("async")
     assert "ensure" not in sync_caps
     assert "parse_http_response" not in sync_caps
+    assert "analyze_json_structure" in sync_caps
     assert "await" not in sync_caps
     assert "asyncio.sleep" in async_caps
 
 
 @pytest.mark.asyncio
 async def test_search_web_uses_searlo_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    from hawker_agent.tools import http_tools as http_tools_module
     from hawker_agent.tools.http_tools import search_web
 
     captured: dict[str, object] = {}
@@ -350,20 +458,140 @@ async def test_search_web_uses_searlo_api_key(monkeypatch: pytest.MonkeyPatch) -
     async def fake_get_client() -> DummyClient:
         return DummyClient()
 
+    http_tools_module._search_web_cache.clear()
     monkeypatch.setattr("hawker_agent.tools.http_tools._get_client", fake_get_client)
     from hawker_agent.config import get_settings
 
     get_settings.cache_clear()
     try:
         result = await search_web("machine learning", limit=3, page=2, gl="us")
+        full_result = await search_web("machine learning", limit=3, page=2, gl="us", full=True)
     finally:
         get_settings.cache_clear()
 
-    assert result["success"] is True
+    assert result == [
+        {
+            "rank": 1,
+            "title": "Intro",
+            "link": "https://example.com/ml",
+            "snippet": "Machine learning is a subset of AI...",
+        }
+    ]
+    assert full_result["success"] is True
     assert captured["url"] == "https://api.searlo.tech/api/v1/search/web"
     kwargs = captured["kwargs"]
     assert kwargs["headers"] == {"x-api-key": "searlo-test-key"}
     assert kwargs["params"] == {"q": "machine learning", "limit": 3, "page": 2, "gl": "us"}
+
+
+@pytest.mark.asyncio
+async def test_search_web_returns_raw_detected_result_items_and_caches(monkeypatch: pytest.MonkeyPatch) -> None:
+    from hawker_agent.tools import http_tools as http_tools_module
+    from hawker_agent.tools.http_tools import search_web
+
+    calls = 0
+
+    class DummyResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "searchParameters": {"q": "paper", "type": "search", "gl": "us"},
+                "page": 1,
+                "nextPage": 2,
+                "previousPage": None,
+                "totalResults": 20,
+                "searchTime": 3.551,
+                "organic": [
+                    {
+                        "position": 1,
+                        "title": "Paper",
+                        "url": "https://example.com/paper",
+                        "description": "Abstract snippet",
+                        "displayedLink": "example.com › paper",
+                        "domain": "example.com",
+                    }
+                ],
+                "source": "searlo.tech(brave)",
+                "credits": 1,
+            }
+
+    class DummyClient:
+        async def get(self, _url: str, **_kwargs: object) -> DummyResponse:
+            nonlocal calls
+            calls += 1
+            return DummyResponse()
+
+    monkeypatch.setenv("SEARLO_API_KEY", "searlo-test-key")
+    http_tools_module._search_web_cache.clear()
+
+    async def fake_get_client() -> DummyClient:
+        return DummyClient()
+
+    monkeypatch.setattr("hawker_agent.tools.http_tools._get_client", fake_get_client)
+    from hawker_agent.config import get_settings
+
+    get_settings.cache_clear()
+    try:
+        first = await search_web("paper", limit=5)
+        second = await search_web("paper", limit=5)
+        full = await search_web("paper", limit=5, full=True)
+    finally:
+        get_settings.cache_clear()
+        http_tools_module._search_web_cache.clear()
+
+    assert calls == 1
+    assert first == second
+    assert first == [
+        {
+            "position": 1,
+            "title": "Paper",
+            "url": "https://example.com/paper",
+            "description": "Abstract snippet",
+            "displayedLink": "example.com › paper",
+            "domain": "example.com",
+        }
+    ]
+    assert full["items"] == first
+    assert full["searchInformation"] == {
+        "totalResults": 20,
+        "searchTime": 3.551,
+        "query": "paper",
+        "currentPage": 1,
+        "nextPage": 2,
+        "previousPage": None,
+        "hasNextPage": True,
+        "source": "searlo.tech(brave)",
+        "credits": 1,
+    }
+    assert full["schema"]["root_type"] == "dict"
+    assert full["schema"]["root_keys"] == [
+        "searchParameters",
+        "page",
+        "nextPage",
+        "previousPage",
+        "totalResults",
+        "searchTime",
+        "organic",
+        "source",
+        "credits",
+    ]
+    assert full["schema"]["selected_record_path"] == "$.organic"
+    assert full["schema"]["candidate_record_lists"] == [
+        {
+            "path": "$.organic",
+            "length": 1,
+            "dict_items": 1,
+            "sample_item_keys": ["description", "displayedLink", "domain", "position", "title", "url"],
+        }
+    ]
+    assert any(
+        path["path"] == "$.organic"
+        and path["type"] == "list"
+        and path["sample_item_keys"] == ["description", "displayedLink", "domain", "position", "title", "url"]
+        for path in full["schema"]["paths"]
+    )
 
 
 def test_hidden_tools_do_not_appear_in_prompt_capabilities() -> None:
@@ -436,6 +664,23 @@ async def test_fetch_dispatches_to_http_request() -> None:
         http_tools_module.http_request = original
 
     assert result == "[200]\\nplain text"
+
+
+@pytest.mark.asyncio
+async def test_fetch_body_returns_clean_response_body() -> None:
+    from hawker_agent.tools import http_tools as http_tools_module
+
+    async def fake_http_request(*args, **kwargs):
+        return "[200]\n<feed><title>ok</title></feed>"
+
+    original = http_tools_module.http_request
+    http_tools_module.http_request = fake_http_request
+    try:
+        result = await fetch("https://example.com/feed.xml", parse="body")
+    finally:
+        http_tools_module.http_request = original
+
+    assert result == "<feed><title>ok</title></feed>"
 
 
 def test_save_result_json_does_not_delete_result_when_checkpoint_has_same_name(tmp_path: Path) -> None:
@@ -531,8 +776,8 @@ def test_save_result_json_reconciles_missing_downloaded_files(tmp_path: Path) ->
     result_path = save_result_json(
         tmp_path,
         [
-            {"title": "A", "downloaded_file": "exists.pdf"},
-            {"title": "B", "downloaded_file": "missing.pdf"},
+            {"title": "A", "download": {"status": "success", "file": "exists.pdf"}},
+            {"title": "B", "download": {"status": "success", "file": "missing.pdf"}},
         ],
         "done",
     )
@@ -540,16 +785,92 @@ def test_save_result_json_reconciles_missing_downloaded_files(tmp_path: Path) ->
     result_path = save_result_json(
         tmp_path,
         [
-            {"title": "A", "downloaded_file": "exists.pdf"},
-            {"title": "B", "downloaded_file": "missing.pdf"},
+            {"title": "A", "download": {"status": "success", "file": "exists.pdf"}},
+            {"title": "B", "download": {"status": "success", "file": "missing.pdf"}},
         ],
         "done",
     )
 
     data = json_mod.loads(result_path.read_text(encoding="utf-8"))
-    assert data["items"][0]["downloaded_file"] == "exists.pdf"
-    assert "downloaded_file" not in data["items"][1]
-    assert data["items"][1]["download_status"] == "missing_on_disk"
+    assert data["items"][0]["download"]["file"] == "exists.pdf"
+    assert "file" not in data["items"][1]["download"]
+    assert data["items"][1]["download"]["status"] == "missing_on_disk"
+
+
+def test_save_result_json_reconciles_nested_download_files(tmp_path: Path) -> None:
+    (tmp_path / "exists.pdf").write_text("pdf", encoding="utf-8")
+    result_path = save_result_json(
+        tmp_path,
+        [
+            {"title": "A", "download": {"status": "success", "file": "exists.pdf"}},
+            {"title": "B", "download": {"status": "success", "file": "missing.pdf"}},
+        ],
+        "done",
+    )
+
+    data = json_mod.loads(result_path.read_text(encoding="utf-8"))
+    assert data["items"][0]["download"]["file"] == "exists.pdf"
+    assert "file" not in data["items"][1]["download"]
+    assert data["items"][1]["download"]["status"] == "missing_on_disk"
+
+
+def test_save_result_json_projects_download_entity_into_business_item(tmp_path: Path) -> None:
+    (tmp_path / "paper.pdf").write_text("pdf", encoding="utf-8")
+    result_path = save_result_json(
+        tmp_path,
+        [
+            {"title": "Paper", "download_link": "https://example.com/paper.pdf"},
+            {
+                "download_url": "https://example.com/paper.pdf",
+                "download": {"status": "success", "file": "paper.pdf"},
+            },
+        ],
+        "done",
+    )
+
+    data = json_mod.loads(result_path.read_text(encoding="utf-8"))
+    assert data["items_count"] == 2
+
+
+def test_save_result_json_drops_standalone_download_item_when_richer_item_exists(tmp_path: Path) -> None:
+    (tmp_path / "paper.pdf").write_text("pdf", encoding="utf-8")
+    result_path = save_result_json(
+        tmp_path,
+        [
+            {
+                "download_url": "https://example.com/paper.pdf",
+                "download": {"status": "success", "file": "paper.pdf"},
+            },
+            {
+                "title": "Paper",
+                "link": "https://example.com/paper",
+                "abstract": "demo",
+                "download_url": "https://example.com/paper.pdf",
+                "download": {"status": "success", "file": "paper.pdf"},
+            },
+        ],
+        "done",
+    )
+
+    data = json_mod.loads(result_path.read_text(encoding="utf-8"))
+    assert data["items_count"] == 2
+
+
+def test_check_files_on_disk_accepts_artifacts_file(tmp_path: Path) -> None:
+    from hawker_agent.tools.data_tools import check_files_on_disk
+
+    (tmp_path / "artifact.pdf").write_text("pdf", encoding="utf-8")
+    report = check_files_on_disk(
+        tmp_path,
+        [
+            {"artifacts": {"file": {"filename": "artifact.pdf"}}},
+            {"artifacts": {"file": {"filename": "missing.pdf"}}},
+        ],
+    )
+
+    assert report["total_downloads"] == 2
+    assert report["verified_count"] == 1
+    assert report["missing_files"] == ["missing.pdf"]
 
 
 def test_normalize_items_trims_verbose_pdf_file_payload() -> None:
@@ -576,6 +897,87 @@ def test_normalize_items_trims_verbose_pdf_file_payload() -> None:
     assert "ok" not in pdf_file
     assert "requested_filename" not in pdf_file
     assert "method" not in pdf_file
+
+
+def test_append_items_observation_reports_changed_and_unchanged() -> None:
+    state = CodeAgentState()
+    reg = ToolRegistry()
+    register_core_actions(reg, state, "/tmp/test")
+    append_items = reg.as_namespace_dict()["append_items"]
+
+    asyncio.run(append_items([{"ref": "1", "status": "unknown"}]))
+    result = asyncio.run(append_items([{"ref": "1", "status": "success"}]))
+
+    assert result == [{"ref": "1", "status": "success"}]
+    assert state.recent_observations[-1].startswith("[append_items] changed=1")
+
+
+def test_browser_download_auto_records_current_state_evidence() -> None:
+    state = CodeAgentState()
+
+    async def fake_browser_download(url: str, filename: str | None = None, run_dir: str | None = None) -> dict[str, object]:
+        return {
+            "ok": True,
+            "url": url,
+            "filename": filename or "file.pdf",
+            "path": f"{run_dir}/file.pdf",
+            "size": 3,
+            "method": "curl_cffi",
+        }
+
+    sys_dict = build_system_dict(state, {"browser_download": fake_browser_download}, "/tmp/run")
+    asyncio.run(sys_dict["browser_download"]("https://example.com/file.pdf", filename="file.pdf"))
+
+    assert state.items.to_list() == [
+        {
+            "download_url": "https://example.com/file.pdf",
+            "download": {
+                "status": "success",
+                "file": "file.pdf",
+                "path": "/tmp/run/file.pdf",
+                "size": 3,
+            }
+        }
+    ]
+
+
+def test_browser_download_merges_back_into_existing_ref_entity() -> None:
+    state = CodeAgentState()
+    state.items.append(normalize_items([{
+        "ref": "paper_1",
+        "title": "Paper",
+        "link": "https://example.com/paper",
+    }]))
+
+    async def fake_browser_download(url: str, filename: str | None = None, run_dir: str | None = None) -> dict[str, object]:
+        return {
+            "ok": True,
+            "url": url,
+            "filename": filename or "paper.pdf",
+            "path": f"{run_dir}/paper.pdf",
+            "size": 3,
+            "method": "curl_cffi",
+            "ref": "paper_1",
+        }
+
+    sys_dict = build_system_dict(state, {"browser_download": fake_browser_download}, "/tmp/run")
+    asyncio.run(sys_dict["browser_download"]("https://example.com/paper.pdf", filename="paper.pdf", ref="paper_1"))
+
+    assert state.items.to_list() == [
+        {
+            "ref": "paper_1",
+            "entity_key": "ref:paper_1",
+            "title": "Paper",
+            "link": "https://example.com/paper",
+            "download_url": "https://example.com/paper.pdf",
+            "download": {
+                "status": "success",
+                "file": "paper.pdf",
+                "path": "/tmp/run/paper.pdf",
+                "size": 3,
+            },
+        }
+    ]
 
 
 def test_normalize_final_artifact_keeps_business_text_unchanged() -> None:
@@ -804,6 +1206,19 @@ class TestHttpTools:
         with pytest.raises(ValueError, match="private/reserved IP via DNS"):
             await http_tools_module._validate_url("https://example.com/data")
 
+    @pytest.mark.asyncio
+    async def test_validate_url_allows_mixed_public_and_reserved_dns_results(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from hawker_agent.tools import http_tools as http_tools_module
+
+        async def fake_resolve_host_ips(hostname: str, port: int | None) -> set[str]:
+            assert hostname == "example.com"
+            assert port == 443
+            return {"169.254.169.254", "93.184.216.34"}
+
+        monkeypatch.setattr(http_tools_module, "_resolve_host_ips", fake_resolve_host_ips)
+
+        await http_tools_module._validate_url("https://example.com/data")
+
 
 # ─── ACI Tool Refactor ───────────────────────────────────────────
 
@@ -1024,88 +1439,10 @@ def test_status_hint_known_and_fallback() -> None:
     assert _status_hint_for(200) is None
 
 
-# ─── browser.actions filtering helpers ────────────────────────────
+# ─── browser.actions cookie helpers ────────────────────────────────
 
 
-class TestNetworkLogHelpers:
-    def test_normalize_methods_accepts_string(self) -> None:
-        from hawker_agent.browser.actions import _normalize_methods
-
-        assert _normalize_methods("post") == {"POST"}
-        assert _normalize_methods("get, post") == {"GET", "POST"}
-        assert _normalize_methods(None) is None
-        assert _normalize_methods(["Put", "patch"]) == {"PUT", "PATCH"}
-
-    def test_normalize_status_range_accepts_multiple_forms(self) -> None:
-        from hawker_agent.browser.actions import _normalize_status_range
-
-        assert _normalize_status_range(200) == (200, 200)
-        assert _normalize_status_range("200-299") == (200, 299)
-        assert _normalize_status_range("500,599") == (500, 599)
-        assert _normalize_status_range([400, 403]) == (400, 403)
-        assert _normalize_status_range("nope") is None
-        assert _normalize_status_range(None) is None
-
-    def test_entry_content_type_prefers_res_headers(self) -> None:
-        from hawker_agent.browser.actions import _entry_content_type
-
-        entry = {
-            "resHeaders": {"Content-Type": "application/json; charset=utf-8"},
-            "body": "[]",
-        }
-        assert _entry_content_type(entry).startswith("application/json")
-
-    def test_looks_like_data_api_detects_json_post(self) -> None:
-        from hawker_agent.browser.actions import _looks_like_data_api
-
-        good = {
-            "method": "POST",
-            "status": 200,
-            "resHeaders": {"Content-Type": "application/json"},
-            "body": "x" * 500,
-        }
-        framework = {
-            "method": "GET",
-            "status": 200,
-            "resHeaders": {"Content-Type": "text/css"},
-            "body": "body { color: red }",
-        }
-        assert _looks_like_data_api(good) is True
-        assert _looks_like_data_api(framework) is False
-
-    def test_summarize_netlog_entries_picks_errors_and_apis(self) -> None:
-        from hawker_agent.browser.actions import _summarize_netlog_entries
-
-        entries = [
-            {
-                "type": "xhr",
-                "method": "GET",
-                "status": 404,
-                "url": "https://x/a",
-            },
-            {
-                "type": "xhr",
-                "method": "POST",
-                "status": 200,
-                "url": "https://x/api/data",
-                "resHeaders": {"Content-Type": "application/json"},
-                "body": "[" + "{}," * 120 + "{}]",
-            },
-        ]
-        summary = _summarize_netlog_entries(entries)
-        assert summary["total"] == 2
-        assert summary["by_type"].get("xhr") == 2
-        assert any(e["status"] == 404 for e in summary["errors"])
-        assert any("/api/data" in e["url"] for e in summary["likely_data_api"])
-
-    def test_trim_netlog_entry_truncates_body(self) -> None:
-        from hawker_agent.browser.actions import _trim_netlog_entry
-
-        entry = {"url": "https://x", "body": "x" * 2000}
-        trimmed = _trim_netlog_entry(entry)
-        assert len(trimmed["body"]) < 2000
-        assert "截断" in trimmed["body"]
-
+class TestBrowserCookieHelpers:
     def test_cookie_domain_matches_treats_subdomains_as_same(self) -> None:
         from hawker_agent.browser.actions import _cookie_domain_matches
 

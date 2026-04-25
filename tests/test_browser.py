@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -13,46 +13,12 @@ from hawker_agent.browser.actions import (
     browser_download,
     nav as action_nav,
 )
-from hawker_agent.browser.netlog import NETLOG_INJECT_JS
+from hawker_agent.agent.namespace import register_core_actions
 from hawker_agent.models.state import CodeAgentState
+from hawker_agent.models.history import CodeAgentHistoryList
 from hawker_agent.observability import collect_observations
 from hawker_agent.tools.browser_tools import register_browser_tools
 from hawker_agent.tools.registry import ToolRegistry
-
-
-# ─── NETLOG_INJECT_JS ─────────────────────────────────────────
-
-
-class TestNetlogJS:
-    def test_is_nonempty_string(self) -> None:
-        assert isinstance(NETLOG_INJECT_JS, str)
-        assert len(NETLOG_INJECT_JS) > 100
-
-    def test_contains_patched_flag(self) -> None:
-        assert "window.__netlog_patched" in NETLOG_INJECT_JS
-
-    def test_contains_max_entries(self) -> None:
-        assert "MAX=50" in NETLOG_INJECT_JS
-
-    def test_contains_fetch_patch(self) -> None:
-        assert "window.fetch=function" in NETLOG_INJECT_JS
-
-    def test_contains_xhr_patch(self) -> None:
-        assert "XMLHttpRequest.prototype.open" in NETLOG_INJECT_JS
-
-    def test_filters_static_assets(self) -> None:
-        assert "png" in NETLOG_INJECT_JS
-        assert "css" in NETLOG_INJECT_JS
-        assert "woff2" in NETLOG_INJECT_JS
-
-    def test_filters_analytics(self) -> None:
-        assert "google-analytics.com" in NETLOG_INJECT_JS
-        assert "sentry.io" in NETLOG_INJECT_JS
-
-    def test_filters_framework_hotreload(self) -> None:
-        assert "/_nuxt/builds/" in NETLOG_INJECT_JS
-        assert "/__webpack" in NETLOG_INJECT_JS
-        assert "/hot-update." in NETLOG_INJECT_JS
 
 
 # ─── BrowserSession ───────────────────────────────────────────
@@ -96,8 +62,9 @@ class TestBrowserSession:
             from hawker_agent.browser.session import BrowserSession
 
             session = BrowserSession()
-            assert session.netlog_installed is False
-            assert session.netlog_cursor == 0
+            assert session.target_dir is None
+            assert not hasattr(session, "netlog_installed")
+            assert not hasattr(session, "netlog_cursor")
 
     def test_headless_from_settings(self) -> None:
         with patch("hawker_agent.browser.session.get_settings") as mock_settings:
@@ -126,6 +93,8 @@ class TestBrowserSession:
                 browser_storage_state=Path("/tmp/browser-state.json"),
                 browser_channel="chrome",
                 browser_cdp_url="http://127.0.0.1:9222",
+                browser_proxy=None,
+                browser_timezone_id=None,
             )
             from hawker_agent.browser.session import BrowserSession
 
@@ -138,6 +107,7 @@ class TestBrowserSession:
                 "storage_state": Path("/tmp/browser-state.json"),
                 "channel": "chrome",
                 "cdp_url": "http://127.0.0.1:9222",
+                "proxy": None,
                 "auto_download_pdfs": False,
             }
 
@@ -150,11 +120,15 @@ class TestBrowserSession:
             browser_executable_path="",
             browser_user_data_dir="",
             browser_storage_state="",
+            browser_proxy="",
+            browser_timezone_id="",
         )
 
         assert cfg.browser_executable_path is None
         assert cfg.browser_user_data_dir is None
         assert cfg.browser_storage_state is None
+        assert cfg.browser_proxy is None
+        assert cfg.browser_timezone_id is None
 
     def test_empty_cloud_browser_settings_are_normalized(self) -> None:
         from hawker_agent.config import Settings
@@ -189,12 +163,21 @@ class TestBrowserSession:
                 browser_storage_state=Path("/tmp/browser-state.json"),
                 browser_channel="chrome",
                 browser_cdp_url="http://127.0.0.1:9222",
+                browser_proxy="http://user:pass@proxy.example:8080",
+                browser_timezone_id="Asia/Shanghai",
             )
             mock_profile = MagicMock()
             mock_profile_cls.return_value = mock_profile
             mock_upstream = MagicMock()
             mock_upstream.start = AsyncMock()
             mock_upstream.stop = AsyncMock()
+            mock_cdp_session = MagicMock()
+            mock_cdp_session.session_id = "session-1"
+            mock_cdp_session.cdp_client = MagicMock()
+            mock_cdp_session.cdp_client.send = MagicMock()
+            mock_cdp_session.cdp_client.send.Emulation = MagicMock()
+            mock_cdp_session.cdp_client.send.Emulation.setTimezoneOverride = AsyncMock()
+            mock_upstream.get_or_create_cdp_session = AsyncMock(return_value=mock_cdp_session)
             mock_session_cls.return_value = mock_upstream
 
             from hawker_agent.browser.session import BrowserSession
@@ -210,10 +193,16 @@ class TestBrowserSession:
                 storage_state=Path("/tmp/browser-state.json"),
                 channel="chrome",
                 cdp_url="http://127.0.0.1:9222",
+                proxy=ANY,
                 auto_download_pdfs=False,
             )
             mock_session_cls.assert_called_once_with(browser_profile=mock_profile)
             mock_upstream.start.assert_awaited_once()
+            mock_upstream.get_or_create_cdp_session.assert_awaited_once_with(target_id=None, focus=False)
+            mock_cdp_session.cdp_client.send.Emulation.setTimezoneOverride.assert_awaited_once_with(
+                params={"timezoneId": "Asia/Shanghai"},
+                session_id="session-1",
+            )
 
     @pytest.mark.asyncio
     async def test_aenter_bootstraps_browser_use_cloud_session(self) -> None:
@@ -235,7 +224,6 @@ class TestBrowserSession:
                 browser_use_base_url="https://api.browser-use.local",
                 browser_use_profile_id="profile-123",
                 browser_use_proxy_country_code="us",
-                browser_use_keep_alive=True,
                 browser_use_enable_recording=True,
             )
 
@@ -289,6 +277,27 @@ class TestBrowserSession:
                 json={"action": "stop"},
             )
             mock_http_client.aclose.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_aexit_cleans_temp_browser_use_profile_dir(self, tmp_path: Path) -> None:
+        temp_profile_dir = tmp_path / "browser-use-user-data-dir-test"
+        temp_profile_dir.mkdir()
+        (temp_profile_dir / "marker.txt").write_text("x", encoding="utf-8")
+
+        with patch("hawker_agent.browser.session.get_settings") as mock_settings:
+            mock_settings.return_value = MagicMock(headless=True)
+            from hawker_agent.browser.session import BrowserSession
+
+            session = BrowserSession()
+            mock_upstream = MagicMock()
+            mock_upstream.stop = AsyncMock()
+            session._session = mock_upstream
+            session._temp_user_data_dir = temp_profile_dir
+
+            await session.__aexit__(None, None, None)
+
+            mock_upstream.stop.assert_awaited_once()
+            assert not temp_profile_dir.exists()
 
 
 @pytest.mark.asyncio
@@ -399,19 +408,16 @@ async def test_nav_skip_mode_avoids_dom_capture() -> None:
     session = MagicMock()
     session.raw = MagicMock()
     session.raw.navigate_to = AsyncMock()
-    session.netlog_cursor = 9
 
     async def _fast_sleep(_: float) -> None:
         return None
 
-    with patch("hawker_agent.browser.actions.ensure_network_monitor", AsyncMock()), \
-         patch("hawker_agent.browser.actions.asyncio.sleep", _fast_sleep), \
+    with patch("hawker_agent.browser.actions.asyncio.sleep", _fast_sleep), \
          patch("hawker_agent.browser.actions._capture_dom_state", AsyncMock(side_effect=AssertionError("should not capture dom"))), \
          patch("hawker_agent.browser.actions._capture_navigation_meta", AsyncMock(return_value={"title": "目标页", "url": "https://example.com/final"})):
         result = await action_nav(session, "https://example.com/start", mode="skip")
 
     session.raw.navigate_to.assert_awaited_once_with("https://example.com/start")
-    assert session.netlog_cursor == 0
     assert result.summary == "[OK] 目标页 | DOM=skipped | URL 已变(redirected): https://example.com/final"
     assert result.snapshot["title"] == "目标页"
     assert result.snapshot["url"] == "https://example.com/final"
@@ -480,6 +486,55 @@ async def test_browser_download_retries_once_then_succeeds(tmp_path: Path) -> No
     assert result["ok"] is True
     assert result["filename"] == "retry.pdf"
     assert saved.exists()
+
+
+@pytest.mark.asyncio
+async def test_inspect_page_returns_nested_dom_payload_shape() -> None:
+    state = CodeAgentState()
+    history = CodeAgentHistoryList()
+    session = type("Session", (), {})()
+
+    reg = ToolRegistry()
+    register_core_actions(reg, state, "/tmp/test")
+
+    from hawker_agent.tools import browser_tools as browser_tools_module
+
+    original = browser_tools_module.actions.dom_state
+    browser_tools_module.actions.dom_state = AsyncMock(
+        return_value=DomActionResult(
+            summary="[OK] DOM summary",
+            dom="<html>dom</html>",
+            snapshot={"title": "OpenAI"},
+            context_mode="full",
+        )
+    )
+    try:
+        register_browser_tools(reg, session, history, state)
+        inspect_page = reg.as_namespace_dict()["inspect_page"]
+        payload = await inspect_page(include=["dom"], mode="full")
+    finally:
+        browser_tools_module.actions.dom_state = original
+
+    assert list(payload.keys()) == ["dom"]
+    assert payload["dom"]["summary"] == "[OK] DOM summary"
+    assert payload["dom"]["mode"] == "full"
+    assert payload["dom"]["snapshot"] == {"title": "OpenAI"}
+
+
+@pytest.mark.asyncio
+async def test_inspect_page_rejects_removed_network_dimension() -> None:
+    state = CodeAgentState()
+    history = CodeAgentHistoryList()
+    session = type("Session", (), {})()
+    reg = ToolRegistry()
+    register_core_actions(reg, state, "/tmp/test")
+
+    register_browser_tools(reg, session, history, state)
+    inspect_page = reg.as_namespace_dict()["inspect_page"]
+    result = await inspect_page(include=["network"], mode="summary")
+
+    assert "已移除" in result["error"]
+    assert "fetch" in result["error"]
 
 
 # ─── DomActionResult ──────────────────────────────────────────
@@ -585,12 +640,13 @@ class TestBrowserToolsRegistration:
         register_browser_tools(registry, mock_session, mock_history)
         expected = {
             "nav", "dom_state", "nav_search", "inspect_page", "js", "click",
-            "click_index", "fill_input", "browser_download", "get_network_log",
+            "click_index", "fill_input", "browser_download",
             "get_selector_from_index", "get_cookies", "list_downloaded_files",
         }
         for name in expected:
             assert name in registry, f"工具 {name} 未注册"
-        assert len(registry) == 13
+        assert "get_network_log" not in registry
+        assert len(registry) == 12
 
     def test_tool_descriptions_in_chinese(self) -> None:
         registry = ToolRegistry()
@@ -618,6 +674,28 @@ class TestBrowserToolsRegistration:
         assert "skip" in nav_line
         assert "summary" in nav_line
         assert "full" in nav_line
+
+    def test_inspect_page_signature_is_shortened_for_prompt(self) -> None:
+        registry = ToolRegistry()
+        mock_session = MagicMock()
+        mock_history = MagicMock()
+        register_browser_tools(registry, mock_session, mock_history)
+        desc = registry.build_description()
+        inspect_line = next(line for line in desc.splitlines() if "inspect_page(" in line)
+        assert "selector_index=None" in inspect_line
+        assert "mode='summary'" in inspect_line
+        assert "**kwargs" in inspect_line
+        assert "network" not in inspect_line
+
+    def test_browser_download_docstring_requires_explicit_identity(self) -> None:
+        registry = ToolRegistry()
+        mock_session = MagicMock()
+        mock_history = MagicMock()
+        register_browser_tools(registry, mock_session, mock_history)
+        ns = registry.as_namespace_dict()
+        doc = ns["browser_download"].__doc__ or ""
+        assert "必须显式传相同的 ``ref=`` 或 ``entity_key=``" in doc
+        assert "不会再根据字段名或 URL 猜测合并" in doc
 
     def test_nav_signature_no_session(self) -> None:
         registry = ToolRegistry()
@@ -650,18 +728,6 @@ class TestBrowserToolsRegistration:
         param_names = list(sig.parameters.keys())
         assert param_names == ["index", "text"]
 
-    def test_get_network_log_signature(self) -> None:
-        registry = ToolRegistry()
-        mock_session = MagicMock()
-        mock_history = MagicMock()
-        register_browser_tools(registry, mock_session, mock_history)
-        ns = registry.as_namespace_dict()
-        sig = inspect.signature(ns["get_network_log"])
-        param_names = list(sig.parameters.keys())
-        assert "filter" in param_names
-        assert "only_new" in param_names
-        assert "session" not in param_names
-
     def test_dom_state_no_params(self) -> None:
         registry = ToolRegistry()
         mock_session = MagicMock()
@@ -670,3 +736,42 @@ class TestBrowserToolsRegistration:
         ns = registry.as_namespace_dict()
         sig = inspect.signature(ns["dom_state"])
         assert list(sig.parameters.keys()) == ["mode"]
+
+
+def test_model_prompts_do_not_reintroduce_network_capture_contract() -> None:
+    template_dir = Path("hawker_agent/templates")
+    texts = "\n".join(path.read_text(encoding="utf-8") for path in template_dir.rglob("*.txt"))
+    texts += "\n".join(path.read_text(encoding="utf-8") for path in template_dir.rglob("*.jinja2"))
+    texts += "\n".join(path.read_text(encoding="utf-8") for path in template_dir.rglob("*.md"))
+
+    assert "get_network_log" not in texts
+    assert "include=[\"network\"]" not in texts
+    assert "network=True" not in texts
+
+
+def test_model_prompts_keep_core_tool_contracts_after_compaction() -> None:
+    system_prompt = Path("hawker_agent/templates/system_prompt.jinja2").read_text(encoding="utf-8")
+    default_instructions = Path("hawker_agent/templates/default_instructions.txt").read_text(encoding="utf-8")
+    observer_prompt = Path("hawker_agent/templates/observer_prompt.jinja2").read_text(encoding="utf-8")
+
+    assert "必须 await" in system_prompt
+    assert "先判断页面类型" in system_prompt
+    assert "click_index(123)" in system_prompt
+    assert "导航后索引失效" in system_prompt
+    assert "最小 DOM 交互范式" in system_prompt
+    assert "await inspect_page(include=[\"dom\"]" in system_prompt
+    assert "多页 DOM 提取范式" in system_prompt
+    assert "for page_no in range(3)" in system_prompt
+    assert "next_index 必须来自当前页 DOM" in system_prompt
+    assert "append_items()" in system_prompt
+    assert "ref" in system_prompt or "entity_key" in system_prompt
+    assert "final_answer" in default_instructions
+    assert "analyze_json_structure" in default_instructions
+    assert "fetch(parse=\"body\"" in default_instructions
+    assert "ref" in default_instructions or "entity_key" in default_instructions
+    assert "先判定网页类型" in default_instructions
+    assert "不确定类型时先浏览器驱动分页" in default_instructions
+    assert "不要猜 `page=1,2`" in default_instructions
+    assert "nextCursor" in default_instructions
+    assert "# {{ domain }} — Scraping & Data Extraction" in observer_prompt
+    assert "不编造" in observer_prompt

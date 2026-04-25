@@ -47,10 +47,11 @@ await final_answer(final_msg)
     
     await execute(code, ns, state=state)
     
-    # 验证数据是否提交成功
-    assert len(state.items) == 2
+    # 验证业务数据与下载证据是否提交成功
+    assert len(state.items) == 3
+    assert state.items.to_list()[-1]["download"]["status"] == "success"
     # 验证 final_answer 是否被触发
-    assert state.final_answer_requested == "Got 2 items"
+    assert state.final_answer_requested == "Got 3 items"
     
     # 验证检查点文件是否生成
     checkpoint_file = run_dir / "test.json"
@@ -58,7 +59,7 @@ await final_answer(final_msg)
     
     # 验证 namespace 变量持久化 (符合协议的变量提升到 session)
     assert ns.session["res_visited"] == "Visited https://example.com"
-    assert ns.session["final_msg"] == "Got 2 items"
+    assert ns.session["final_msg"] == "Got 3 items"
     assert ns.session["my_items"] == [{"id": 1, "val": "a"}, {"id": 2, "val": "b"}]
     
     # 不符合协议的临时变量 (i) 应该在 session 中找不到

@@ -16,7 +16,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from hawker_agent.agent.prompts import render_template
-from hawker_agent.browser import actions
 from hawker_agent.browser.session import BrowserSession
 from hawker_agent.config import Settings
 from hawker_agent.knowledge.store import SiteSOP, SiteSOPStore, extract_site_keys, extract_urls, normalize_page_pattern
@@ -37,13 +36,13 @@ class ObserverEvidence:
     Attributes:
         domain: Canonical target domain inferred from the task or executed code.
         execution_log: Condensed step history showing successful and failed cells.
-        network_summary: Compact summary of relevant network traffic.
+        data_access_summary: Compact summary of explicit data access evidence.
         source_url: Best-effort source URL extracted from the run.
     """
 
     domain: str
     execution_log: str
-    network_summary: str
+    data_access_summary: str
     source_url: str
 
 
@@ -100,7 +99,7 @@ def load_observer_examples() -> dict[str, ObserverExample]:
     return examples
 
 
-def classify_observer_evidence(execution_log: str, network_summary: str) -> str:
+def classify_observer_evidence(execution_log: str, data_access_summary: str) -> str:
     """Classifies the run into a coarse evidence type.
 
     The classifier is intentionally heuristic and low-cost. It only needs to
@@ -108,17 +107,17 @@ def classify_observer_evidence(execution_log: str, network_summary: str) -> str:
 
     Args:
         execution_log: Condensed code execution history.
-        network_summary: Condensed network traffic summary.
+        data_access_summary: Condensed explicit data access summary.
 
     Returns:
         One of ``"api_only"``, ``"hybrid"``, or ``"browser_required"``.
     """
     exec_lower = execution_log.lower()
-    net_lower = network_summary.lower()
+    data_lower = data_access_summary.lower()
 
     api_signals = sum(
-        token in exec_lower or token in net_lower
-        for token in ("http_json(", "http_request(", "application/json", "/api/", "response_sample:")
+        token in exec_lower or token in data_lower
+        for token in ("http_json(", "http_request(", "fetch(", "application/json", "/api/", "explicit_url:")
     )
     browser_signals = sum(
         token in exec_lower
@@ -136,19 +135,24 @@ def classify_observer_evidence(execution_log: str, network_summary: str) -> str:
     return "browser_required"
 
 
-def select_observer_examples(execution_log: str, network_summary: str, *, max_examples: int = 2) -> list[ObserverExample]:
+def select_observer_examples(
+    execution_log: str,
+    data_access_summary: str,
+    *,
+    max_examples: int = 2,
+) -> list[ObserverExample]:
     """Selects the most relevant few-shot examples for the observer prompt.
 
     Args:
         execution_log: Condensed code execution history.
-        network_summary: Condensed network traffic summary.
+        data_access_summary: Condensed explicit data access summary.
         max_examples: Maximum number of examples to return.
 
     Returns:
         Ordered few-shot examples, starting from the best evidence-type match.
     """
     examples = load_observer_examples()
-    primary_key = classify_observer_evidence(execution_log, network_summary)
+    primary_key = classify_observer_evidence(execution_log, data_access_summary)
     order = [primary_key]
     for fallback in ("hybrid", "api_only", "browser_required"):
         if fallback not in order:
@@ -239,43 +243,32 @@ def build_execution_log(cells: list[CodeCell], items: list[dict[str, Any]], *, m
     return "\n\n".join(sections).strip() or "No execution evidence available."
 
 
-def build_network_summary(netlog_result: dict[str, Any]) -> str:
-    """Builds a prompt-friendly summary from raw network log output.
-
-    Args:
-        netlog_result: Raw network log payload returned by browser actions.
-
-    Returns:
-        A compact multiline summary emphasizing request method, URL, status,
-        content type, and short body samples.
-    """
-    entries = list(netlog_result.get("entries") or [])
-    if not entries:
-        return "No useful network evidence."
-
+def build_data_access_summary(cells: list[CodeCell], items: list[dict[str, Any]]) -> str:
+    """Builds a prompt-friendly summary from explicit code and confirmed items."""
     lines: list[str] = []
-    for entry in entries[:10]:
-        url = str(entry.get("url") or "")
-        method = str(entry.get("method") or "GET").upper()
-        status = entry.get("status")
-        content_type = ""
-        headers = entry.get("headers")
-        if isinstance(headers, dict):
-            for key, value in headers.items():
-                if str(key).lower() == "content-type":
-                    content_type = str(value)
-                    break
-        req_body = str(entry.get("reqBody") or entry.get("requestBody") or "")
-        body = str(entry.get("body") or "")
-        line = f"- {method} {url} | status={status}"
-        if content_type:
-            line += f" | content_type={content_type}"
-        if req_body:
-            line += f"\n  request_body: {req_body[:300]}"
-        if body:
-            line += f"\n  response_sample: {body[:500]}"
-        lines.append(line)
-    return "\n".join(lines)
+    url_pattern = re.compile(r"https?://[^\s'\"\\)]+")
+    for cell in cells:
+        if cell.status != CellStatus.SUCCESS:
+            continue
+        source = cell.source or ""
+        if not any(token in source for token in ("fetch(", "http_json(", "http_request(", "search_web(", "js(")):
+            continue
+        urls = url_pattern.findall(source)
+        tool_hits = [
+            token.rstrip("(")
+            for token in ("fetch(", "http_json(", "http_request(", "search_web(", "js(")
+            if token in source
+        ]
+        detail = f"- step={cell.step} tools={','.join(tool_hits)}"
+        if urls:
+            detail += " explicit_url=" + ", ".join(urls[:3])
+        if cell.output:
+            detail += " output=" + str(cell.output).replace("\n", " ")[:300]
+        lines.append(detail)
+    if items:
+        sample = json.dumps(items[:1], ensure_ascii=False)
+        lines.append(f"- confirmed_items={len(items)} sample={sample[:500]}")
+    return "\n".join(lines) if lines else "No explicit data access evidence."
 
 
 def extract_requested_fields(task: str) -> list[str]:
@@ -352,7 +345,7 @@ def infer_preferred_entry(workflow_kind: str, page_pattern: str) -> str:
     if page_pattern == "/trending":
         return "nav_summary_then_extract"
     if workflow_kind == "hybrid":
-        return "nav_summary_then_network"
+        return "nav_summary_then_explicit_fetch"
     return "inspect_then_extract"
 
 
@@ -541,7 +534,7 @@ async def collect_observer_evidence(
         task: Original user task.
         cells: Executed code cells.
         items: Structured items collected during the run.
-        browser: Active browser session for network log collection.
+        browser: Active browser session. It is not inspected by Observer.
 
     Returns:
         An :class:`ObserverEvidence` bundle, or ``None`` when no target domain
@@ -556,21 +549,10 @@ async def collect_observer_evidence(
         return None
 
     source_url = _extract_source_url(cells)
-    try:
-        netlog = await actions.get_network_log(
-            browser,
-            only_new=False,
-            content_type_contains="json",
-            max_entries=20,
-        )
-    except Exception as exc:
-        logger.info("Observer netlog 收集失败，继续使用纯执行证据: %s", exc)
-        netlog = {"entries": []}
-
     return ObserverEvidence(
         domain=domains[0],
         execution_log=build_execution_log(cells, items),
-        network_summary=build_network_summary(netlog),
+        data_access_summary=build_data_access_summary(cells, items),
         source_url=source_url,
     )
 
@@ -657,7 +639,7 @@ async def generate_and_store_site_sop_from_evidence(
         The stored :class:`SiteSOP` on success, otherwise ``None`` when SOP
         generation is rejected or fails.
     """
-    examples = select_observer_examples(evidence.execution_log, evidence.network_summary)
+    examples = select_observer_examples(evidence.execution_log, evidence.data_access_summary)
     messages = [
         {
             "role": "system",
@@ -670,7 +652,7 @@ async def generate_and_store_site_sop_from_evidence(
                 ),
                 existing_sop=existing_sop_markdown,
                 execution_log=evidence.execution_log,
-                network_summary=evidence.network_summary,
+                data_access_summary=evidence.data_access_summary,
                 update_reason="success_distillation",
             ),
         }
@@ -705,7 +687,7 @@ async def generate_and_store_site_sop_from_evidence(
         return None
 
     page_pattern = infer_page_pattern(task, evidence.source_url)
-    workflow_kind = classify_observer_evidence(evidence.execution_log, evidence.network_summary)
+    workflow_kind = classify_observer_evidence(evidence.execution_log, evidence.data_access_summary)
     should_inspect_first = infer_should_inspect_first(workflow_kind, page_pattern, evidence.execution_log)
     preferred_entry = infer_preferred_entry(workflow_kind, page_pattern)
     field_contract = extract_requested_fields(task)

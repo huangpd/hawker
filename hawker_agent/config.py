@@ -79,6 +79,12 @@ class Settings(BaseSettings):
     langfuse_release: str = ""
     searlo_api_key: str | None = None
 
+    # OBS
+    obs_ak: str | None = None
+    obs_sk: str | None = None
+    obs_server: str | None = None
+    obs_bucket: str | None = None
+
     # 预算控制
     max_steps: int = 30
     max_total_tokens: int = 200_000
@@ -98,11 +104,12 @@ class Settings(BaseSettings):
     browser_storage_state: Path | None = None
     browser_channel: str | None = None
     browser_cdp_url: str | None = None
+    browser_proxy: str | None = None
+    browser_timezone_id: str | None = None
     browser_use_api_key: str | None = None
     browser_use_base_url: str | None = None
     browser_use_profile_id: str | None = None
     browser_use_proxy_country_code: str | None = None
-    browser_use_keep_alive: bool = False
     browser_use_enable_recording: bool = False
 
     # 日志
@@ -163,6 +170,8 @@ class Settings(BaseSettings):
         "browser_executable_path",
         "browser_user_data_dir",
         "browser_storage_state",
+        "browser_proxy",
+        "browser_timezone_id",
         "searlo_api_key",
         mode="before",
     )

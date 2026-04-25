@@ -103,17 +103,20 @@ class ToolRegistry:
     def build_description(self) -> str:
         """生成详细的工具文档（包含参数、文档字符串等）。"""
         lines = []
-        for spec in self._tools.values():
-            if not spec.expose_in_prompt:
-                continue
+        for spec, clean_sig in self._iter_prompt_specs("all"):
             is_async = inspect.iscoroutinefunction(inspect.unwrap(spec.fn))
             prefix = "async " if is_async else ""
-            lines.append(f"- {prefix}{spec.name}{spec.signature} -> {spec.return_type}: {spec.description}")
+            lines.append(f"- {prefix}{spec.name}{clean_sig} -> {spec.return_type}: {spec.description}")
         return "\n".join(lines)
 
     def _get_clean_signature(self, fn: Callable) -> str:
         """提取不含类型注解和内部参数的干净签名。"""
         sig = inspect.signature(inspect.unwrap(fn))
+
+        # 对少数高频复杂工具，给模型展示更短的调用面；完整能力仍保留在真实函数签名与 docstring 中。
+        if getattr(fn, "__name__", "") == "inspect_page":
+            return "(include=None, selector_index=None, mode='summary', **kwargs)"
+
         params = []
         for name, p in sig.parameters.items():
             # 隐藏系统注入的内部参数
@@ -132,24 +135,27 @@ class ToolRegistry:
 
         return f"({', '.join(params)})"
 
+    def _iter_prompt_specs(self, kind: Literal["async", "sync", "all"]) -> list[tuple[ToolSpec, str]]:
+        """返回可暴露给提示词的工具及其精简签名。"""
+        rows: list[tuple[ToolSpec, str]] = []
+        for spec in self._tools.values():
+            if not spec.expose_in_prompt:
+                continue
+            is_async = inspect.iscoroutinefunction(inspect.unwrap(spec.fn))
+            if kind == "async" and not is_async:
+                continue
+            if kind == "sync" and is_async:
+                continue
+            rows.append((spec, self._get_clean_signature(spec.fn)))
+        return rows
+
     def build_capabilities_list(self, kind: Literal["async", "sync"]) -> str:
         """根据类型生成高质量的能力清单，按类别分组。"""
         from collections import defaultdict
         
         grouped_tools: dict[str | None, list[str]] = defaultdict(list)
         
-        for spec in self._tools.values():
-            if not spec.expose_in_prompt:
-                continue
-            is_async = inspect.iscoroutinefunction(inspect.unwrap(spec.fn))
-
-            # 过滤同步/异步
-            if (kind == "async" and not is_async) or (kind == "sync" and is_async):
-                continue
-                
-            # 使用精简后的签名
-            clean_sig = self._get_clean_signature(spec.fn)
-            
+        for spec, clean_sig in self._iter_prompt_specs(kind):
             if kind == "async":
                 line = f"- `await {spec.name}{clean_sig}`: {spec.description}"
             else:

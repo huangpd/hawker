@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -10,6 +11,7 @@ import nbformat
 from nbformat.v4 import new_code_cell, new_markdown_cell, new_notebook
 
 from hawker_agent.models.cell import CodeCell
+from hawker_agent.models.item import ItemStore
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +171,8 @@ def save_result_json(
     result_dir.mkdir(parents=True, exist_ok=True)
     path = result_dir / "result.json"
 
-    normalized_items = _reconcile_downloaded_files(run_dir, items)
+    projected_items = _project_delivery_items(items)
+    normalized_items = _reconcile_downloaded_files(run_dir, projected_items)
 
     data = {
         "result": answer,
@@ -193,18 +196,35 @@ def save_result_json(
     return path
 
 
+def _project_delivery_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Project internal entity state into user-facing current items."""
+    store = ItemStore()
+    store.append(items)
+    projected = []
+    for item in store.to_list():
+        row = dict(item)
+        row.pop("entity_key", None)
+        projected.append(row)
+    return projected
+
+
 def _reconcile_downloaded_files(run_dir: Path, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """导出前核对 downloaded_file 是否真实存在，避免对外谎报下载成功。"""
+    """导出前核对下载文件是否真实存在，避免对外谎报下载成功。"""
     normalized: list[dict[str, Any]] = []
     for item in items:
-        row = dict(item)
-        downloaded_file = row.get("downloaded_file")
-        if isinstance(downloaded_file, str) and downloaded_file.strip():
-            candidate = run_dir / downloaded_file
-            if not candidate.exists() or not candidate.is_file():
-                logger.warning("导出时发现缺失下载文件，已降级标记: %s", downloaded_file)
-                row.pop("downloaded_file", None)
-                row["download_status"] = "missing_on_disk"
+        row = copy.deepcopy(item)
+        download = row.get("download")
+        if isinstance(download, dict):
+            nested_file = download.get("file")
+            if isinstance(nested_file, str) and nested_file.strip():
+                candidate = run_dir / nested_file
+                if not candidate.exists() or not candidate.is_file():
+                    logger.warning("导出时发现缺失下载文件，已降级标记: %s", nested_file)
+                    download.pop("file", None)
+                    download["status"] = "missing_on_disk"
+        row.pop("ok", None)
+        row.pop("download_status", None)
+        row.pop("obs_path", None)
         normalized.append(row)
     return normalized
 

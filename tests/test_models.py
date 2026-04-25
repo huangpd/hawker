@@ -31,6 +31,7 @@ from hawker_agent.agent.runner import _build_namespace_skip_names, _start_observ
 from hawker_agent.agent.evaluator import build_final_evaluation_messages
 from hawker_agent.agent.namespace import HawkerNamespace
 from hawker_agent.knowledge.observer import ObserverEvidence
+from hawker_agent.tools.data_tools import normalize_items
 
 
 # ─── exceptions ─────────────────────────────────────────────────
@@ -69,37 +70,39 @@ class TestExceptions:
 class TestItemStore:
     def test_append_basic(self) -> None:
         store = ItemStore()
-        added, skipped = store.append([{"url": "a"}, {"url": "b"}])
-        assert added == 2
-        assert skipped == 0
+        changed, unchanged = store.append([{"url": "a"}, {"url": "b"}])
+        assert changed == 2
+        assert unchanged == 0
         assert len(store) == 2
 
-    def test_append_dedup_by_url(self) -> None:
+    def test_append_does_not_upsert_by_url_without_explicit_identity(self) -> None:
         store = ItemStore()
         store.append([{"url": "a"}])
-        added, skipped = store.append([{"url": "a"}])
-        assert added == 0
-        assert skipped == 1
+        changed, unchanged = store.append([{"url": "a", "status": "success"}])
+        assert changed == 1
+        assert unchanged == 0
+        assert store.to_list() == [{"url": "a"}, {"url": "a", "status": "success"}]
 
-    def test_append_dedup_by_id(self) -> None:
+    def test_append_preserves_identity_when_merging(self) -> None:
         store = ItemStore()
         store.append([{"id": "1", "url": "a"}])
-        added, skipped = store.append([{"id": "1", "url": "b"}])
-        assert added == 0
-        assert skipped == 1
+        changed, unchanged = store.append([{"id": "1", "url": "b", "status": "ok"}])
+        assert changed == 1
+        assert unchanged == 0
+        assert store.to_list() == [{"id": "1", "url": "b", "status": "ok"}]
 
-    def test_append_dedup_fallback_json(self) -> None:
+    def test_append_same_payload_is_unchanged(self) -> None:
         store = ItemStore()
         store.append([{"foo": "bar"}])
-        added, skipped = store.append([{"foo": "bar"}])
-        assert added == 0
-        assert skipped == 1
+        changed, unchanged = store.append([{"foo": "bar"}])
+        assert changed == 0
+        assert unchanged == 1
 
     def test_append_non_dict_skipped(self) -> None:
         store = ItemStore()
-        added, skipped = store.append(["not_a_dict", 42, {"url": "a"}])  # type: ignore[list-item]
-        assert added == 1
-        assert skipped == 2
+        changed, unchanged = store.append(["not_a_dict", 42, {"url": "a"}])  # type: ignore[list-item]
+        assert changed == 1
+        assert unchanged == 2
 
     def test_to_list_returns_copy(self) -> None:
         store = ItemStore()
@@ -115,6 +118,121 @@ class TestItemStore:
         store.append([{"url": "a"}])
         assert store
         assert len(store) == 1
+
+    def test_append_prefers_more_informative_state(self) -> None:
+        store = ItemStore()
+        store.append(normalize_items([{"ref": "1", "download_status": "unknown"}]))
+        store.append(normalize_items([{"ref": "1", "download_status": "success", "downloaded_file": "a.pdf"}]))
+        assert store.to_list() == [{"entity_key": "ref:1", "download": {"status": "success", "file": "a.pdf"}, "ref": "1"}]
+
+    def test_get_last_changed_returns_merged_entity(self) -> None:
+        store = ItemStore()
+        store.append([{"ref": "1", "status": "unknown"}])
+        store.append([{"ref": "1", "status": "success"}])
+        assert store.get_last_changed() == {"ref": "1", "status": "success"}
+
+    def test_append_does_not_merge_by_secondary_alias_without_explicit_identity(self) -> None:
+        store = ItemStore()
+        store.append([
+            {
+                "title": "Paper",
+                "url": "https://example.com/paper",
+                "download_url": "https://example.com/paper.pdf",
+            }
+        ])
+        store.append([
+            {
+                "download_url": "https://example.com/paper.pdf",
+                "download": {"status": "success", "file": "paper.pdf"},
+            }
+        ])
+
+        assert store.to_list() == [
+            {
+                "title": "Paper",
+                "url": "https://example.com/paper",
+                "download_url": "https://example.com/paper.pdf",
+            },
+            {
+                "download_url": "https://example.com/paper.pdf",
+                "download": {"status": "success", "file": "paper.pdf"},
+            }
+        ]
+
+    def test_append_does_not_merge_download_link_with_download_url_without_explicit_identity(self) -> None:
+        store = ItemStore()
+        store.append([
+            {
+                "title": "Paper",
+                "download_link": "https://example.com/paper.pdf",
+            }
+        ])
+        store.append([
+            {
+                "download_url": "https://example.com/paper.pdf",
+                "download": {"status": "success", "file": "paper.pdf"},
+            }
+        ])
+
+        assert store.to_list() == [
+            {
+                "title": "Paper",
+                "download_link": "https://example.com/paper.pdf",
+            },
+            {
+                "download_url": "https://example.com/paper.pdf",
+                "download": {"status": "success", "file": "paper.pdf"},
+            }
+        ]
+
+    def test_append_merges_different_resource_urls_when_entity_key_is_explicit(self) -> None:
+        store = ItemStore()
+        store.append(normalize_items([
+            {
+                "entity_key": "paper:001",
+                "title": "RNA review",
+                "link": "https://arxiv.org/abs/2511.02622v1",
+                "abstract": "demo",
+            }
+        ]))
+        store.append(normalize_items([
+            {
+                "entity_key": "paper:001",
+                "download_url": "https://arxiv.org/pdf/2511.02622",
+                "download": {"status": "success", "file": "2511.02622v1.pdf"},
+            }
+        ]))
+
+        assert store.to_list() == [
+            {
+                "entity_key": "paper:001",
+                "title": "RNA review",
+                "link": "https://arxiv.org/abs/2511.02622v1",
+                "abstract": "demo",
+                "download_url": "https://arxiv.org/pdf/2511.02622",
+                "download": {"status": "success", "file": "2511.02622v1.pdf"},
+            }
+        ]
+
+    def test_append_does_not_merge_different_resource_urls_without_explicit_identity(self) -> None:
+        store = ItemStore()
+        store.append(normalize_items([
+            {"title": "Paper", "url": "https://doi.org/10.1000/xyz123"}
+        ]))
+        store.append(normalize_items([
+            {"download_url": "https://publisher.example/pdf?doi=10.1000/xyz123", "download": {"status": "success"}}
+        ]))
+
+        assert store.to_list() == [
+            {
+                "title": "Paper",
+                "url": "https://doi.org/10.1000/xyz123",
+            },
+            {
+                "download_url": "https://publisher.example/pdf?doi=10.1000/xyz123",
+                "download": {"status": "success"},
+            }
+        ]
 
 
 # ─── TokenStats ─────────────────────────────────────────────────
@@ -200,6 +318,12 @@ class TestCodeAgentState:
         state = CodeAgentState()
         assert state.checkpoint_files == set()
 
+    def test_recent_observations_are_bounded(self) -> None:
+        state = CodeAgentState()
+        for idx in range(10):
+            state.remember_observation(f"obs-{idx}", max_entries=4)
+        assert state.recent_observations == ["obs-6", "obs-7", "obs-8", "obs-9"]
+
     def test_replace_state_items_overwrites_runtime_items(self) -> None:
         state = CodeAgentState()
         state.items.append([{"title": "stale"}, {"title": "old"}])
@@ -220,6 +344,38 @@ class TestCodeAgentState:
         )
         assert items == [{"title": "stale"}]
 
+    def test_resolve_final_items_keeps_system_download_evidence_separate_without_explicit_identity(self) -> None:
+        items = resolve_final_items(
+            final_artifact={
+                "type": "json",
+                "items": [
+                    {
+                        "title": "Paper",
+                        "url": "https://example.com/paper",
+                        "download_url": "https://example.com/paper.pdf",
+                    }
+                ],
+            },
+            fallback_items=[
+                {
+                    "download_url": "https://example.com/paper.pdf",
+                    "download": {"status": "success", "file": "paper.pdf"},
+                }
+            ],
+        )
+
+        assert items == [
+            {
+                "title": "Paper",
+                "url": "https://example.com/paper",
+                "download_url": "https://example.com/paper.pdf",
+            },
+            {
+                "download_url": "https://example.com/paper.pdf",
+                "download": {"status": "success", "file": "paper.pdf"},
+            }
+        ]
+
     def test_build_namespace_skip_names_uses_system_keys(self) -> None:
         namespace = HawkerNamespace({"nav": object(), "fetch": object(), "json": object()}, "/tmp/run")
         skip_names = _build_namespace_skip_names(namespace)
@@ -234,7 +390,7 @@ class TestCodeAgentState:
         evidence = ObserverEvidence(
             domain="example.com",
             execution_log="Step 1\n```python\nawait nav('https://example.com')\n```",
-            network_summary="No useful network evidence.",
+            data_access_summary="No explicit data access evidence.",
             source_url="https://example.com",
         )
 
@@ -486,7 +642,7 @@ def test_final_evaluation_prompt_does_not_reference_result_json() -> None:
         recent_observations=[],
     )
 
-    assert "items/artifact" in messages[0]["content"]
+    assert "items 是当前实体状态" in messages[0]["content"]
     assert "result.json" not in messages[0]["content"]
 
 

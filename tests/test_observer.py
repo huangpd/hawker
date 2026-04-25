@@ -3,8 +3,8 @@ from __future__ import annotations
 from hawker_agent.models.cell import CellStatus, CodeCell
 from hawker_agent.models.state import TokenStats
 from hawker_agent.knowledge.observer import (
+    build_data_access_summary,
     build_execution_log,
-    build_network_summary,
     classify_observer_evidence,
     extract_requested_fields,
     extract_golden_rule,
@@ -55,22 +55,19 @@ def test_build_execution_log_prefers_success_and_key_failures() -> None:
     assert "Confirmed data sample" in text
 
 
-def test_build_network_summary_formats_entries() -> None:
-    summary = build_network_summary(
-        {
-            "entries": [
-                {
-                    "url": "https://example.com/api/search?q=demo",
-                    "method": "GET",
-                    "status": 200,
-                    "headers": {"content-type": "application/json"},
-                    "body": '{"items":[{"id":1}]}',
-                }
-            ]
-        }
-    )
-    assert "GET https://example.com/api/search?q=demo" in summary
-    assert "response_sample" in summary
+def test_build_data_access_summary_formats_explicit_tools() -> None:
+    cells = [
+        _cell(
+            step=1,
+            status=CellStatus.SUCCESS,
+            source='data = await fetch("https://example.com/api/search?q=demo", parse="json")',
+            output="提取 3 条",
+        )
+    ]
+    summary = build_data_access_summary(cells, [{"id": 1}])
+    assert "fetch" in summary
+    assert "explicit_url=https://example.com/api/search?q=demo" in summary
+    assert "confirmed_items=1" in summary
 
 
 def test_extract_golden_rule_from_markdown() -> None:
@@ -87,7 +84,7 @@ def test_load_observer_examples() -> None:
 def test_classify_observer_evidence_api_only() -> None:
     kind = classify_observer_evidence(
         "items = http_json('https://example.com/api')\nprint(items)",
-        "- GET https://example.com/api | content_type=application/json\n  response_sample: {}",
+        "- step=1 tools=http_json explicit_url=https://example.com/api output=application/json",
     )
     assert kind == "api_only"
 
@@ -95,7 +92,7 @@ def test_classify_observer_evidence_api_only() -> None:
 def test_classify_observer_evidence_hybrid() -> None:
     kind = classify_observer_evidence(
         "await nav('https://example.com')\nawait click('button')\nitems = http_json('https://example.com/api')",
-        "- GET https://example.com/api | content_type=application/json",
+        "- step=2 tools=http_json explicit_url=https://example.com/api",
     )
     assert kind == "hybrid"
 
@@ -103,7 +100,7 @@ def test_classify_observer_evidence_hybrid() -> None:
 def test_select_observer_examples_prefers_primary_then_fallback() -> None:
     examples = select_observer_examples(
         "await nav('https://example.com/listings')\nawait js('return 1')",
-        "No useful network evidence.",
+        "No explicit data access evidence.",
     )
     assert examples[0].key == "browser_required"
     assert len(examples) == 2

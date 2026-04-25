@@ -53,44 +53,109 @@ def build_final_evaluation_messages(
     final_answer: str,
     items: list[dict[str, Any]],
     recent_observations: list[str],
+    run_dir: str | None = None,
 ) -> list[dict[str, str]]:
     """构造最终交付评估请求。"""
-    sample_items = items[:3]
+    sample_items = _select_sample_items(items, limit=3)
     obs_text = "\n".join(f"- {obs}" for obs in recent_observations if obs.strip()) or "- (无)"
     requirements = extract_task_requirements(task)
+    from hawker_agent.tools.data_tools import check_files_on_disk
+    file_report = {}
+    if run_dir:
+        file_report = check_files_on_disk(run_dir, items)
+    evidence_report = _build_evidence_report(items, file_report)
+
     return [
         {
             "role": "system",
             "content": (
-                "你是 Hawker 的最终交付评估器。基于当前任务来分析，不要基于过于外部知识做评估"
-                "你只负责判断当前 final_answer 是否应该被放行。"
-                "不要改代码，不要规划下一步。"
-                "只输出 JSON：{\"accept\": true|false, \"reason\": \"...\", \"missing_requirements\": [\"...\"]}。"
-                "优先依据任务要求验收产出物，而不是依据模型自述。"
-                "若 delivery_mode=summary_with_structured_items，则 final_answer 默认只需摘要，结构化数据由系统记录的 items/artifact 承载。"
-                "若 delivery_mode=inline_json，则 final_answer 必须满足任务对内联 JSON 的要求。"
-                "这里提供的“样本”仅是 items 的抽样预览，不代表全量条数，不能因为样本条数少于 items_count 就拒绝。"
-                "拒绝必须基于任务文本、items 样本或最近观察中的显式证据；不要用你自己的外部知识或启发式推断替代现场证据。"
-                "尤其不要仅凭 URL 编号、slug、文件名、ID 前缀、发布日期编码规则等启发式去否定结果，除非这些规则已在任务或观察中被明确证实。"
-                "若某条数据只是看起来可疑，但缺少显式证据，请在 reason 中标注疑点，或直接放行，而不是硬拒绝。"
-                "如果任务要求下载、保存或导出文件，则必须看到显式完成证据。"
-                "仅有 pdf_url、download_url、文件链接或可下载地址，只能说明“可下载”，不能说明“已经下载完成”。"
-                "下载完成证据应来自 items 中的 downloaded_file/download_status，或最近观察中的明确下载成功记录。"
-                "只有在样本明显与任务字段不符、items 为空、final_answer 与已采集数据明显矛盾，或交付证据严重不足时才拒绝。"
+                "你是 Hawker 的最终交付评估器。只判断当前 final_answer 是否可以放行，"
+                "不要改代码，不要规划下一步。只输出 JSON："
+                "{\"accept\": true|false, \"reason\": \"...\", \"missing_requirements\": [\"...\"]}。\n\n"
+                "验收原则：\n"
+                "1. 以系统状态为准：items 是当前实体状态，样本只是抽样预览，不得因样本量少于 items_count 拒绝。\n"
+                "2. summary_with_structured_items 模式下，final_answer 只需做用户可读总结；结构化数据完整性由 items/证据统计承载。\n"
+                "3. inline_json 模式下，final_answer 必须满足任务要求的 JSON 契约。\n"
+                "4. 只有任务明确要求下载、保存、上传文件，或 final_answer 明确宣称文件已交付时，才强制验收文件证据。\n"
+                "5. 文件证据可以来自 download、artifacts.file、facts、OBS 记录或磁盘校验报告；不要要求固定字段名。\n"
+                "6. 单独的业务字段链接不构成文件交付证据；只有协议字段（download、artifacts.file、facts）和校验报告才算。\n\n"
+                "拒绝标准：\n"
+                "1. 明确要求的文件交付缺少证据，或磁盘报告显示文件 missing/empty。\n"
+                "2. final_answer 的数量、结论或完成状态与系统统计、证据统计明显矛盾。\n"
+                "3. 任务要求结构化数据，但 items_count 为 0 \n"
+                "4. inline_json 模式下 final_answer 没有有效 JSON 或字段严重缺失。\n\n"
+                "放行原则：\n"
+                "- 非关键疑点不要硬拒绝；可以在 reason 中说明疑点后放行。\n"
+                "- 不要用外部知识、URL 编号、文件名猜测、发布时间编码等启发式否定现场证据。\n"
+                "- 不要因为样本没有展示全量字段而拒绝；应结合 items_count、证据统计和最近观察判断。"
             ),
         },
         {
             "role": "user",
             "content": (
                 f"[任务]\n{task}\n\n"
-                f"[任务要求摘要]\n{json.dumps(requirements.__dict__, ensure_ascii=False, indent=2)}\n\n"
-                f"[final_answer]\n{final_answer}\n\n"
-                f"[items_count]\n{len(items)}\n\n"
-                f"[样本]\n{json.dumps(sample_items, ensure_ascii=False, indent=2)}\n\n"
-                f"[最近观察]\n{obs_text}\n"
+                f"[交付模式]\n{requirements.delivery_mode}\n\n"
+                f"[证据统计]\n{json.dumps(evidence_report, ensure_ascii=False, indent=2)}\n\n"
+                f"[磁盘/对象存储校验报告]\n{json.dumps(file_report, ensure_ascii=False, indent=2)}\n\n"
+                f"[最终回复 (final_answer)]\n{final_answer}\n\n"
+                f"[系统统计]\n- 采集总数: {len(items)}\n- 最近观察: {obs_text}\n\n"
+                f"[数据样本 (抽样预览)]\n{json.dumps(sample_items, ensure_ascii=False, indent=2)}\n"
             ),
         },
     ]
+
+
+def _build_evidence_report(items: list[dict[str, Any]], file_report: dict[str, Any]) -> dict[str, Any]:
+    file_evidence_items = 0
+    for item in items:
+        has_file_evidence = False
+        if isinstance(item.get("download"), dict):
+            has_file_evidence = True
+        if isinstance(item.get("artifacts"), dict):
+            has_file_evidence = True
+        facts = item.get("facts")
+        if isinstance(facts, dict):
+            if facts.get("downloaded") is True:
+                has_file_evidence = True
+        if has_file_evidence:
+            file_evidence_items += 1
+    return {
+        "items_count": len(items),
+        "file_evidence_items": file_evidence_items,
+        "verified_files": int(file_report.get("verified_count") or 0),
+        "verified_obs_files": int(file_report.get("obs_verified_count") or 0),
+        "missing_files": len(file_report.get("missing_files") or []),
+        "empty_files": len(file_report.get("empty_files") or []),
+    }
+
+
+def _is_informative_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "unknown", "none", "null", "n/a", "missing", "missing_on_disk"}
+    if isinstance(value, (list, tuple, set, dict)):
+        return len(value) > 0
+    return True
+
+
+def _evidence_score(value: Any) -> int:
+    if isinstance(value, dict):
+        return sum(_evidence_score(v) for v in value.values()) + len(
+            [key for key, subvalue in value.items() if _is_informative_value(subvalue) and not str(key).startswith("_")]
+        )
+    if isinstance(value, (list, tuple, set)):
+        return sum(_evidence_score(v) for v in value)
+    return 1 if _is_informative_value(value) else 0
+
+
+def _select_sample_items(items: list[dict[str, Any]], limit: int = 3) -> list[dict[str, Any]]:
+    """Pick the most information-dense current-state items for evaluator sampling."""
+    ranked = sorted(
+        enumerate(items),
+        key=lambda pair: (-_evidence_score(pair[1]), pair[0]),
+    )
+    return [items[index] for index, _item in ranked[:limit]]
 
 
 def _parse_final_evaluation(text: str) -> FinalEvaluation | None:
@@ -142,11 +207,13 @@ async def evaluate_final_delivery(
         logger.info("Final Evaluator 已启用但未配置 small_model_name，跳过评估")
         return None
 
+    run_dir = str(state.run_dir) if hasattr(state, "run_dir") and state.run_dir else None
     messages = build_final_evaluation_messages(
         task=task,
         final_answer=final_answer,
         items=items,
         recent_observations=recent_observations,
+        run_dir=run_dir,
     )
     client = LLMClient(cfg)
     try:

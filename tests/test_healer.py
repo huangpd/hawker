@@ -17,9 +17,14 @@ class TestHealer:
         assert len(messages) == 2
         user_prompt = messages[1]["content"]
         assert "[工具契约与系统约束]" in user_prompt
-        assert "`fetch(url, ..., parse='json'|'text')`" in user_prompt
+        assert "`fetch(url, ..., parse='json'|'body'|'text')`" in user_prompt
+        assert "returns the provider's raw result dict list by default" in user_prompt
+        assert "Do not assume fixed item fields" in user_prompt
+        assert "structure from `payload['schema']`" in user_prompt
+        assert "`analyze_json_structure(data)`" in user_prompt
+        assert "Never pass args to an IIFE" in user_prompt
         assert "`append_items(items)`" in user_prompt
-        assert "`browser_download(url, filename=None)`" in user_prompt
+        assert "`browser_download(url, filename=None, ref=None, entity_key=None)`" in user_prompt
 
     def test_change_ratio_small_for_local_fix(self) -> None:
         original = "items = []\nobserve(str(len(itemz)))"

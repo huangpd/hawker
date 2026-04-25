@@ -46,12 +46,14 @@ def build_healer_tool_guide() -> str:
         "- `observe(message)`: emit a short observation; use this instead of `print(...)` for formal feedback.\n"
         "- `append_items(items)`: the only persistence path for structured results; append dict/list payloads here.\n"
         "- `final_answer(answer)`: finish the task with summary text; do not dump every raw item again.\n"
-        "- `fetch(url, ..., parse='json'|'text')`: preferred HTTP/API entry; `preview_chars` only affects observation preview, not the returned body.\n"
-        "- `search_web(q, ...)`: preferred tool for generic web search results; use browser search only when page interaction is necessary.\n"
-        "- `js(code, *args, args=[...])`: supports both positional args and `args=[...]`; `code` must evaluate to a JavaScript function when args are passed.\n"
-        "- `browser_download(url, filename=None)`: downloads to the current run dir and reuses the same normalized URL within this run.\n"
+        "- `fetch(url, ..., parse='json'|'body'|'text')`: preferred HTTP/API entry; use `body` for clean XML/HTML/Atom text without `[status]`, and `text`/`raw` only for HTTP debugging.\n"
+        "- `search_web(q, ...)`: preferred tool for generic web search results; returns the provider's raw result dict list by default. Do not assume fixed item fields; use `full=True` when metadata/schema is needed, then read results from `payload['items']` and structure from `payload['schema']`.\n"
+        "- `analyze_json_structure(data)`: inspect arbitrary large JSON shape before choosing extraction paths; it returns paths/keys/types/small samples, not full data.\n"
+        "- `js(code, *args, args=[...])`: no args => pass an expression/IIFE; with args => `code` must evaluate to a JavaScript function. Never pass args to an IIFE.\n"
+        "- `browser_download(url, filename=None, ref=None, entity_key=None)`: downloads to the current run dir. If the download belongs to an existing object, pass the same `ref` or `entity_key` so the download evidence merges back into that object.\n"
         "- `click_index(i)`: click DOM elements marked as `[i_*]`; do not reuse old indexes after page navigation.\n"
-        "- Keep fixes local: do not rewrite the task plan, do not invent new schemas, do not create alternate save paths, and do not reinitialize globals like `all_items` or `run_dir`."
+        "- Keep fixes local: do not rewrite the task plan, do not invent new schemas, do not create alternate save paths, and do not reinitialize globals like `all_items` or `run_dir`.\n"
+        "- Do not rely on field-name guessing to merge objects. Use explicit `ref`/`entity_key` when one object will receive later updates."
     )
 
 

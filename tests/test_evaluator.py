@@ -3,6 +3,8 @@ from __future__ import annotations
 import pytest
 
 from hawker_agent.agent.evaluator import (
+    _build_evidence_report,
+    _select_sample_items,
     _parse_final_evaluation,
     build_final_evaluation_messages,
     extract_task_requirements,
@@ -65,11 +67,56 @@ class TestEvaluator:
         assert "final_answer" in messages[1]["content"]
         assert "样本" in messages[1]["content"]
         assert "summary_with_structured_items" in messages[1]["content"]
-        assert "不能因为样本条数少于 items_count 就拒绝" in messages[0]["content"]
-        assert "优先依据任务要求验收产出物" in messages[0]["content"]
-        assert "不要仅凭 URL 编号" in messages[0]["content"]
-        assert "拒绝必须基于任务文本、items 样本或最近观察中的显式证据" in messages[0]["content"]
-        assert "仅有 pdf_url、download_url、文件链接或可下载地址" in messages[0]["content"]
+        assert "不得因样本量少于 items_count 拒绝" in messages[0]["content"]
+        assert "只有任务明确要求下载、保存、上传文件" in messages[0]["content"]
+        assert "拒绝标准" in messages[0]["content"]
+        assert "单独的业务字段链接不构成文件交付证据" in messages[0]["content"]
+        assert "证据统计" in messages[1]["content"]
+
+    def test_build_evidence_report_counts_generic_evidence(self) -> None:
+        report = _build_evidence_report(
+            [
+                {"download": {"status": "success", "file": "a.pdf"}},
+                {"artifacts": {"file": {"filename": "b.pdf"}}, "facts": {"downloaded": True}},
+            ],
+            {"verified_count": 1, "obs_verified_count": 1, "missing_files": [], "empty_files": []},
+        )
+
+        assert report == {
+            "items_count": 2,
+            "file_evidence_items": 2,
+            "verified_files": 1,
+            "verified_obs_files": 1,
+            "missing_files": 0,
+            "empty_files": 0,
+        }
+
+    def test_build_evidence_report_ignores_business_link_field_names(self) -> None:
+        report = _build_evidence_report(
+            [
+                {"title": "A", "download_link": "https://example.com/a.pdf"},
+                {"title": "B", "pdf_url": "https://example.com/b.pdf"},
+            ],
+            {"verified_count": 1, "obs_verified_count": 0, "missing_files": [], "empty_files": []},
+        )
+
+        assert report["file_evidence_items"] == 0
+        assert report["verified_files"] == 1
+
+    def test_select_sample_items_prefers_richer_current_state_records(self) -> None:
+        items = [
+            {"ref": "1", "download": {"status": "unknown"}},
+            {"ref": "2", "title": "B", "download": {"status": "success", "file": "b.pdf"}},
+            {"ref": "3", "download": {"status": "unknown"}},
+            {"ref": "4", "title": "D", "download": {"status": "success", "file": "d.pdf", "size": 10}},
+        ]
+
+        sample = _select_sample_items(items, limit=2)
+
+        assert sample == [
+            {"ref": "4", "title": "D", "download": {"status": "success", "file": "d.pdf", "size": 10}},
+            {"ref": "2", "title": "B", "download": {"status": "success", "file": "b.pdf"}},
+        ]
 
     @pytest.mark.asyncio
     async def test_final_evaluator_does_not_force_temperature(self, monkeypatch: pytest.MonkeyPatch) -> None:

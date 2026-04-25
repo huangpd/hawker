@@ -5,6 +5,7 @@ import logging
 from hawker_agent.agent.artifact import recover_items_from_artifact
 from hawker_agent.agent.evaluator import evaluate_final_delivery, extract_task_requirements
 from hawker_agent.models.history import CodeAgentHistoryList
+from hawker_agent.models.item import ItemStore
 from hawker_agent.models.state import CodeAgentState
 from hawker_agent.models.step import CodeAgentStepMetadata
 from hawker_agent.tools.data_tools import normalize_items
@@ -33,9 +34,21 @@ def resolve_final_items(
     """
     artifact_items = recover_items_from_artifact(final_artifact)
     if artifact_items:
-        return artifact_items
+        store = ItemStore()
+        store.append(normalize_items(artifact_items))
+        store.append(_system_evidence_items(fallback_items or []))
+        return store.to_list()
 
     return normalize_items(fallback_items or [])
+
+
+def _system_evidence_items(items: list[dict]) -> list[dict]:
+    """保留系统工具确认过的事实，避免探索期普通数据覆盖最终 artifact。"""
+    normalized = normalize_items(items)
+    return [
+        item for item in normalized
+        if any(key in item for key in ("download", "artifacts", "facts"))
+    ]
 
 
 async def process_final_answer_request(
@@ -70,7 +83,7 @@ async def process_final_answer_request(
         task=task,
         final_answer=final_answer_text,
         items=delivery_items,
-        recent_observations=[],
+        recent_observations=state.recent_observations[-6:],
         state=state,
     )
     if evaluation and not evaluation.accept:

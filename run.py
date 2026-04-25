@@ -22,18 +22,10 @@ TASK="""
 2. 返回前5条论文标题，下载链接（可下载的pdf链接），摘要，研究领域
 3. 并下载这5个文论到本地
 """
-TASK="""
-步骤1: 打开 https://www.ahnews.com.cn/df/hss/pc/lay/node_525.html
-步骤2: 点击"下一页"，获取3页数据
-步骤3: 获取列表页URL和title 
-"""
-
 
 TASK="""
-1. 访问维基百科网站：https://en.wikipedia.org
-2. 分别搜索 OpenAI、APPLE 二家公司
-3. 打开维基百科的相关文章
-4. 从信息框和文章中提取以下内容：名称、成立日期、总部、现任首席执行官/领导者、所属行业、主要产品/服务（列出）、收入（如有则提供）、员工人数（如有则提供），以及 2-3 句概括
+1. 维基百科分别搜索 OpenAI、APPLE 二家公司
+2. 从文章中提取以下内容：名称、成立日期、总部、现任首席执行官/领导者、所属行业、主要产品/服务（列出）、收入（如有则提供）、员工人数（如有则提供），以及 2-3 句概括
 提取字段:
 - name: "公司名称"
 - founded: "成立时间"
@@ -53,58 +45,24 @@ TASK="""
 
 TASK="""
 步骤1: 打开网址 https://mcp.aibase.com/zh/explore 
-步骤2: 找到下一页按钮，获取前10页数据 ，分类点击 "搜索工具",认证状态点击“不限”，编程语言是“python”，类型 “MCP Server”，点击按“按下载量”排序
-步骤3:提取所有项目名称、简介、url
+步骤2: 分类点击 "搜索工具",认证状态点击“不限”，编程语言是“python”，类型 “MCP Server”，点击按“按下载量”排序
+步骤3: 提取所有项目名称、简介、url
 """
 
-
-TASK='''
-1.打开 https://kns.cnki.net/kns8s/AdvSearch，点击专业检索
-2.检索词：SU%=航空+航天+飞行器设计+航空发动机+航天器+航空器+卫星+卫星遥感+航空遥感+航天遥感+飞行试验+航空无人机+航天无人机+空中交通+航空安全+航空电子+航空制造 and SU%=数据+数据科学+大数据+人工智能+机器学习+深度学习+数据挖掘+数据分析+数据融合+联邦学习+预测性维护+数据驱动+统计+自然语言处理+计算机视觉
-3.点击搜索
-4.需要爬取的字段：
-文献名称:
-作者:
-期刊页链接:
-发布时间:
-引用量:
-下载量:
-期刊影响因子
-摘要:
-关键词:
-发布单位：
-6.爬10页
-'''
-
-TASK="""
-1.打开 https://github.com/trending
-2.获取当前页面的项目URL、start、fork、today_start，获取数据就返回
-提取字段: 
-- URL: 项目链接 
-- start: start数 
-- fork： fork数
-- today_start: today_start数
-"""
 
 TASK="""
 1.
-获取下面里提到的的论文，获取下载链接，摘要，研究领域,并下载论文
+获取下面里提到的的论文，获取下载链接，摘要，研究领域,题号,返回json，并下载论文
 [87] Jae-Woo Choi, Hyungmin Kim, Hyobin Ong, Youngwoo Yoon, Minsu Jang, Jaehong Kim, et al.
 Reactree: Hierarchical task planning with dynamic tree expansion using llm agent nodes. 2025.
 [88] Siddharth Nayak, Adelmo Morrison Orozco, Marina Ten Have, Vittal Thirumalai, Jackson
 Zhang, Darren Chen, Aditya Kapoor, Eric Robinson, Karthik Gopalakrishnan, James Harrison, et al. LLaMAR: Long-horizon planning for multi-agent robots in partially observable
 environments. arXiv preprint arXiv:2407.10031, 2024.
-[89] Anthropic. Model Context Protocol (MCP), 2024. URL https://www.anthropic.com/news
-/model-context-protocol.
-[90] Yingxuan Yang, Huacan Chai, Yuanyi Song, Siyuan Qi, Muning Wen, Ning Li, Junwei Liao,
-Haoyi Hu, Jianghao Lin, Gaowei Chang, Weiwen Liu, Ying Wen, Yong Yu, and Weinan Zhang.
-A survey of AI agent protocols, 2025. URL https://arxiv.org/abs/2504.16736.
-'''
 """
 
 
 TASK="""
-去 https://x.com/OpenAI，https://x.com/sama，https://x.com/claudeai，https://x.com/bcherny  查看这些账号最新10条动态，用中文总结一下，有AI有什么新的洞察
+去 https://x.com/sama 查看这些账号最新10条动态，用中文总结一下，有AI有什么新的洞察
 """
 
 TASK="""
@@ -124,16 +82,15 @@ TASK="""
 """
 
 
+
+TASK="""在arxiv中 搜索关于 "RNA" 的 5 篇论文，返回标题、链接、摘要、研究领域，并下载论文，上传obs 路径:hawker/paper"""
+
 TASK="""
 1. 打开 https://arxiv.org/search/advanced
 2. 搜素标题为 web agent 论文，查找2026年2月12到2026年4月30之间的论文
 3. 返回该条件下所有论文的链接、标题、摘要、发表时间，json格式
 """
-TASK="""打开 https://arxiv.org/search/advanced 搜索关于 "LLM agent planning" 的 15 篇论文，返回标题、链接、摘要、研究领域，并下载论文"""
 
-TASK="""
-去 从google 进去搜索特朗普的x社交， 查看这个人最新10条动态，用中文总结一下，让我知道他最近的在干什么，有什么新的洞察,返回markdown格式
-"""
 # =================================================================
 
 async def main():

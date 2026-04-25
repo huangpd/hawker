@@ -61,11 +61,12 @@ _CONFIG_GROUPS: dict[str, list[str]] = {
         "browser_storage_state",
         "browser_channel",
         "browser_cdp_url",
+        "browser_proxy",
+        "browser_timezone_id",
         "browser_use_api_key",
         "browser_use_base_url",
         "browser_use_profile_id",
         "browser_use_proxy_country_code",
-        "browser_use_keep_alive",
         "browser_use_enable_recording",
     ],
     "Storage & Logs": [
@@ -215,30 +216,6 @@ def _settings_or_exit() -> Settings:
         raise typer.Exit(2) from exc
 
 
-def _env_template_text() -> str:
-    example = Path(".env.example")
-    if example.exists():
-        return example.read_text(encoding="utf-8")
-    return """# Hawker environment
-OPENAI_API_KEY=
-MODEL_NAME=openai/gpt-5.4
-OPENAI_BASE_URL=
-SMALL_MODEL_NAME=
-MAX_STEPS=30
-MAX_TOTAL_TOKENS=200000
-HEADLESS=false
-# Browser mode: local | browser_use_cloud
-BROWSER_PROVIDER=local
-# For browser_use_cloud, set BROWSER_USE_API_KEY and usually BROWSER_USE_PROFILE_ID.
-BROWSER_USE_API_KEY=
-BROWSER_USE_PROFILE_ID=
-BROWSER_USE_PROXY_COUNTRY_CODE=us
-SCRAPE_DIR=
-LOG_LEVEL=INFO
-SEARLO_API_KEY=
-"""
-
-
 def _default_config_values() -> dict[str, str]:
     return {
         "OPENAI_API_KEY": "",
@@ -264,11 +241,12 @@ def _default_config_values() -> dict[str, str]:
         "BROWSER_STORAGE_STATE": "",
         "BROWSER_CHANNEL": "",
         "BROWSER_CDP_URL": "",
+        "BROWSER_PROXY": "",
+        "BROWSER_TIMEZONE_ID": "",
         "BROWSER_USE_API_KEY": "",
         "BROWSER_USE_BASE_URL": "",
         "BROWSER_USE_PROFILE_ID": "",
         "BROWSER_USE_PROXY_COUNTRY_CODE": "",
-        "BROWSER_USE_KEEP_ALIVE": "false",
         "BROWSER_USE_ENABLE_RECORDING": "false",
         "SCRAPE_DIR": "",
         "KNOWLEDGE_DB_PATH": "",
@@ -332,13 +310,15 @@ def _render_env_values(values: dict[str, str]) -> str:
         f"BROWSER_CHANNEL={values.get('BROWSER_CHANNEL', '')}",
         "# Use BROWSER_CDP_URL directly if you already have an existing browser endpoint.",
         f"BROWSER_CDP_URL={values.get('BROWSER_CDP_URL', '')}",
+        "# Optional local browser anti-detection/session quality settings.",
+        f"BROWSER_PROXY={values.get('BROWSER_PROXY', '')}",
+        f"BROWSER_TIMEZONE_ID={values.get('BROWSER_TIMEZONE_ID', '')}",
         "# Browser Use Cloud settings. PROFILE_ID is strongly recommended so login",
         "# state and cookies can persist across sessions.",
         f"BROWSER_USE_API_KEY={values.get('BROWSER_USE_API_KEY', '')}",
         f"BROWSER_USE_BASE_URL={values.get('BROWSER_USE_BASE_URL', '')}",
         f"BROWSER_USE_PROFILE_ID={values.get('BROWSER_USE_PROFILE_ID', '')}",
         f"BROWSER_USE_PROXY_COUNTRY_CODE={values.get('BROWSER_USE_PROXY_COUNTRY_CODE', '')}",
-        f"BROWSER_USE_KEEP_ALIVE={values.get('BROWSER_USE_KEEP_ALIVE', 'false')}",
         f"BROWSER_USE_ENABLE_RECORDING={values.get('BROWSER_USE_ENABLE_RECORDING', 'false')}",
         "",
         "# Storage & logs",
@@ -416,7 +396,7 @@ def config_init(
         values = _interactive_config_values()
         _write_config_target(target, values)
     else:
-        target.write_text(_env_template_text(), encoding="utf-8")
+        _write_config_target(target, _default_config_values())
     console.print(f"[green]已写入配置文件: {target}[/green]")
 
 
